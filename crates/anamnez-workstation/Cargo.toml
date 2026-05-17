@@ -1,0 +1,17 @@
+[package]
+name = "anamnez-workstation"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "anamnez-workstation"
+path = "src/main.rs"
+
+[dependencies]
+anamnez-protocol = { workspace = true }

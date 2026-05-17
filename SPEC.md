@@ -8,7 +8,7 @@ The purpose of anamnez is to help doctors and medical professionals collect, org
 
 A deployment supports one or more medical professionals, each with their own account.
 
-Authentication is email + password. Passwords are stored as Argon2id hashes. Successful login opens an `auth_session` — a server-side row bound to one `(user, device)` pair, representing the entire token chain for that login. Access tokens are 15-minute opaque bearer tokens; refresh tokens are 12-hour rotating opaque tokens whose current hash lives on the same `auth_session` row and is one-time-use on each refresh. Revocation (admin logout, password change, user disable, sign-out) sets `auth_session.revoked_at`; access dies on the next refresh attempt within ≤15 minutes. See Wire protocol for the request-time mechanics. The first admin is created during the Mac Studio first-boot wizard (see Deployment); the admin then provisions everyone else from the admin UI.
+Authentication is email + password. Passwords are stored as Argon2id hashes. Successful login opens an `auth_session` — a server-side row bound to one `(user, device)` pair, representing the entire token chain for that login. Access tokens are 15-minute opaque bearer tokens; refresh tokens are 12-hour rotating opaque tokens whose current hash lives on the same `auth_session` row and is one-time-use on each refresh. Each session also carries an `absolute_expires_at` fixed 30 days after login — sliding refresh cannot extend a session past that horizon, and the user must log in again. Revocation (admin logout, password change, user disable, sign-out) sets `auth_session.revoked_at`; every authenticated request rechecks this column, so revocation takes effect on the next request regardless of access-token lifetime. See Wire protocol for the request-time mechanics. The first admin is created during the Mac Studio first-boot wizard (see Deployment); the admin then provisions everyone else from the admin UI.
 
 User roles distinguish deployment administration (`admin`) from clinical work (`provider`). The same person can hold both roles. Roles do not by themselves grant access to patient data — clinical access is governed entirely by the `patient_access` table.
 
@@ -18,7 +18,7 @@ A `patient_access` row grants a user one of three levels on a specific patient:
 - `collaborator` — read and write observations and source documents.
 - `read_only` — read only.
 
-Without a `patient_access` row, a user cannot see or touch that patient. The user who creates a patient is automatically inserted at `owner` level and recorded as `primary_provider_id` on the patient. Sharing happens explicitly: an `owner` adds another user as `collaborator` or `read_only` from the patient's page.
+Without a `patient_access` row, a user cannot see or touch that patient. The user who creates a patient is automatically inserted at the `owner` level — `patient_access` is the single source of truth for both data-access control and primary-provider designation, and exactly one `owner` row exists per patient (enforced by a partial unique index on `(patient_id) WHERE level = 'owner'`). Sharing happens explicitly: an `owner` adds another user as `collaborator` or `read_only` from the patient's page; ownership transfer demotes the previous owner to `collaborator` and promotes the designated successor to `owner` in one transaction.
 
 Every authentication event, every patient record access, every observation create or amend, and every change to access grants is recorded in an append-only audit log.
 
@@ -47,12 +47,12 @@ A minimal observation looks like:
 observation {
   id
   patient_id
-  recorded_at          // when it was entered
-  effective_at         // when it actually happened (often differs)
-  effective_period     // for things with duration (symptom started X, ended Y)
-  code                 // structured identifier from the relevant code system
-  code_system          // 'ATC' | 'TITCK' | 'ICD10TM' | 'LOINC' | 'SUT' | 'ANAMNEZ-SYM' — see Storage → Code systems
-  display_text         // free text the doctor (or extractor) typed, preserved verbatim
+  recorded_at                   // when the row was written (audit time)
+  effective_period_start        // when the fact began (NOT NULL)
+  effective_period_end          // nullable; NULL means ongoing. For point-in-time observations (e.g. a lab result), equal to start.
+  code                          // structured identifier from the relevant code system
+  code_system                   // 'ATC' | 'TITCK' | 'ICD10TM' | 'LOINC' | 'SUT' | 'ANAMNEZ-SYM' — observation-scoped subset (SKRS-VP is encounter-only); see Storage → Code systems
+  display_text                  // free text the doctor (or extractor) typed, preserved verbatim
   value_quantity       // {value: 85, unit: "mg/dL"} for numeric
   value_string         // for qualitative
   value_codeable       // for coded answers ("severe", "mild")
@@ -67,7 +67,7 @@ observation {
 
 The code field is what makes this queryable across patients. "Neck pain started 4 weeks ago" and "LDL 85 mg/dL" both become observations with different codes and different value types, but you can ask "show me all of patient X's data on a timeline" with one query.
 
-Conditions and active problems live in the observation table too, with `code_system = 'ICD10TM'` and `is_problem_list_item = true`. The active problem list is a query for these rows where `effective_period.end IS NULL` and `status = 'final'`. Allergies and medications, by contrast, get their own first-class tables (below) — they are life-critical at-a-glance lists, not historical facts, and their shape (severity and reaction for allergies; dose, route, and frequency for medications) does not fit the observation mold.
+Conditions and active problems live in the observation table too, with `code_system = 'ICD10TM'` and `is_problem_list_item = true`. The active problem list is a query for these rows where `effective_period_end IS NULL` and `status = 'final'`. Allergies and medications, by contrast, get their own first-class tables (below) — they are life-critical at-a-glance lists, not historical facts, and their shape (severity and reaction for allergies; dose, route, and frequency for medications) does not fit the observation mold.
 
 Code systems are scoped to the Turkish clinical context: ATC for drug active substances, TİTCK product codes plus GTIN-13 barcodes for drug products on the Turkish market, ICD-10-TM for diagnoses, LOINC for labs, SUT for procedures, the SKRS Başvuru Nedeni vocabulary (`SKRS-VP`) for procedural visit purposes, and a custom curated list (`ANAMNEZ-SYM`) for symptoms and clinical findings. SNOMED CT is out of scope for MVP: Turkey is not a SNOMED International member, the Affiliate License runs ~US$650–1,300/year per clinic deployment in Turkey's income band, and Turkish clinical workflows do not use SNOMED CT in practice (ICD-10-TM and SUT are the national vocabularies). When a doctor types `boyun ağrısı`, autocomplete suggests an `ANAMNEZ-SYM` code; the original free-text stays in a `display_text` field. Structured for querying, original for fidelity.
 
@@ -106,11 +106,26 @@ user {
   created_at, disabled_at
 }
 
+workstation {
+  id,                               // the device_id carried in the client cert's CN
+  label,                            // human-readable, e.g. 'Front Desk', 'Exam Room 2'
+  mode,                             // enum: 'bound' | 'shared'
+  bound_user_id,                    // FK to user; non-null iff mode = 'bound'
+  cert_serial,                      // serial of the client cert issued at enrollment
+  cert_fingerprint,                 // SHA-256 of the issued client cert, for forensics
+  enrolled_at,
+  enrolled_by,                      // FK to user (admin who issued the enrollment string)
+  last_seen_at,
+  revoked_at,                       // nullable; presence puts `id` in the in-memory mTLS deny-set
+  revoked_reason                    // nullable free text
+}
+
 auth_session {
   id,                               // stable across refresh rotations — the unit of revocation
-  user_id, device_id,               // FK to enrolled workstation
+  user_id, device_id,               // FK to workstation
   refresh_token_hash,               // rotates on every refresh, one-time-use
   refresh_expires_at,               // sliding window from last refresh
+  absolute_expires_at,              // fixed 30 days after login; refresh fails past this regardless of activity
   created_at, last_seen_at,
   revoked_at                        // nullable; set on logout, password change, user disable, admin revoke
 }
@@ -130,12 +145,13 @@ patient {
   emergency_contact_name,
   emergency_contact_phone,
   emergency_contact_relationship,
-  primary_provider_id,              // FK to user, the "owner"
   created_by,                       // FK to user
   created_at,
   updated_at,
   deceased_at,                      // nullable
   archived_at,                      // nullable — "left the practice"
+  suppressed_at,                    // nullable — set on admin-approved KVKK m. 11/e erasure request; row is invisible everywhere except audit and the retention sweep
+  suppression_reason,               // nullable free text — justification recorded with suppressed_at
   version
 }
 
@@ -190,16 +206,31 @@ medication {
   version
 }
 
+patient_consent {
+  id,
+  patient_id,
+  purpose,                          // enum: 'lawyer_transfer' | 'research_non_anonymized' | 'other_clinic_referral'
+  granted_at,
+  granted_by,                       // FK to user — the clinician who recorded the consent
+  evidence_source_id,               // FK source_document, nullable — the signed form, if uploaded
+  revoked_at,                       // nullable — KVKK allows withdrawal of consent at any time
+  notes,                            // free-text scope of the consent (which records, which recipient, etc.)
+  version
+}
+
 patient_access {
   patient_id, user_id, level    // 'owner' | 'collaborator' | 'read_only'
 }
 
 audit_log {
   id, occurred_at, actor_user_id, auth_session_id,
-  action,                  // e.g. 'patient.view', 'observation.create', 'observation.amend',
+  action,                  // e.g. 'patient.view', 'patient.update', 'observation.create', 'observation.amend',
                            //      'allergy.create', 'allergy.amend', 'medication.create', 'medication.amend',
+                           //      'source_document.create', 'consent.record', 'consent.revoke',
                            //      'encounter.start', 'encounter.finish', 'encounter.cancel',
-                           //      'user.login', 'patient_access.grant', 'patient_access.revoke',
+                           //      'user.login', 'user.create', 'user.modify', 'user.disable',
+                           //      'workstation.enroll', 'workstation.revoke',
+                           //      'patient_access.grant', 'patient_access.revoke',
                            //      'analysis.generate', 'codesystems.update'
   target_type, target_id,  // what was acted on
   patient_id,              // denormalized for fast "who touched patient X" lookups
@@ -211,19 +242,20 @@ The `audit_log` table is append-only and tamper-evident. Enforcement is layered:
 
 ### Analysis
 
-Two forms of analysis will be provided to the medical professional:
+MVP provides per-patient analysis: a single LLM call, clinician-triggered on demand. The model receives the patient's demographics, active problems, allergies, medications, encounters, and full observation history as structured JSON, and returns a concise Turkish markdown report — prose where the data is narrative, tables where it is tabular (lab trends, medication lists). The report is persisted to `patient_analysis`, audited as `analysis.generate`, and rendered in the UI with a visible "decision-support, not a clinical decision" disclaimer.
 
-1. **Per-patient analysis.** A single LLM call, clinician-triggered on demand. The model receives the patient's demographics, active problems, allergies, medications, encounters, and full observation history as structured JSON, and returns a concise Turkish markdown report — prose where the data is narrative, tables where it is tabular (lab trends, medication lists). The report is persisted to `patient_analysis`, audited as `analysis.generate`, and rendered in the UI with a visible "decision-support, not a clinical decision" disclaimer.
+The system prompt is fixed and versioned (`prompt_version` on the row); the user message is the patient JSON. No chain-of-thought, no tool use, no retrieval beyond the JSON in the prompt.
 
-   The system prompt is fixed and versioned (`prompt_version` on the row); the user message is the patient JSON. No chain-of-thought, no tool use, no retrieval beyond the JSON in the prompt.
-
-   > You are assisting a Turkish medical professional reviewing a patient's record. You will receive the patient's demographics, active problems, allergies, medications, encounters, and observations as JSON. Produce one concise report, in Turkish, formatted as markdown. Summarize the clinical picture, highlight notable trends and inconsistencies, and flag anything the clinician should pay attention to. Use markdown tables for tabular data (lab trends, medication lists) where they aid clarity; otherwise use prose. Frame every finding as something for the clinician to consider — never as a diagnosis, recommendation, or directive. Do not invent data not present in the input; if the record is sparse, say so and keep the report short. Output Turkish only.
-
-2. **Querying for records.** An LLM will have access to the DB schema and any query will be able to be translated to sql -> fed back to the user in the form of tables (downloadable), and navigatable to patients' pages.
+> You are assisting a Turkish medical professional reviewing a patient's record. You will receive the patient's demographics, active problems, allergies, medications, encounters, and observations as JSON. Produce one concise report, in Turkish, formatted as markdown. Summarize the clinical picture, highlight notable trends and inconsistencies, and flag anything the clinician should pay attention to. Use markdown tables for tabular data (lab trends, medication lists) where they aid clarity; otherwise use prose. Frame every finding as something for the clinician to consider — never as a diagnosis, recommendation, or directive. Do not invent data not present in the input; if the record is sparse, say so and keep the report short. Output Turkish only.
 
 ## Privacy
 
-We will have a local first approach; where this will be deployed on their computer, or a computer we provide (probably a Mac Studio to also be able to run inference locally). However, we can also choose to run inference through Openrouter IN TESTING ENVIRONMENTS. To make this clear, only allow openrouter model slugs if ENV=TEST and if ENV=TEST, show something that indicates a test version on the UI.
+We will have a local first approach; where this will be deployed on their computer, or a computer we provide (probably a Mac Studio to also be able to run inference locally). However, we can also choose to run inference through OpenRouter IN TESTING ENVIRONMENTS. The mode is enforced by a `serde`-validated `Environment` enum (`Production` | `Test`) that defaults to `Production`; OpenRouter model slugs are accepted only when `Environment::Test` is active, and the UI displays a persistent red "TEST" shield whenever the daemon is in test mode.
+
+Two additional safeguards prevent test/production cross-contamination:
+
+- **Production-DB marker.** The DB carries an `environment = 'production' | 'test'` row written at first boot. An `Environment::Test` daemon refuses to open a DB tagged `production` (and vice versa) — startup panic. Prevents "oops, pointed staging tool at prod."
+- **`[TEST]` name prefix.** When the daemon is `Environment::Test`, patient creation rejects any `given_names` / `family_name` not prefixed `[TEST]`. Makes test-vs-real obvious in any screenshot or log.
 
 At least the OCR model and the transcription model will run locally ALWAYS. This is non-negotiable. 
 
@@ -235,14 +267,26 @@ The full KVKK mapping — statutory roles, lawful basis (m. 6/3 health-services 
 
 - **Zero cross-border data transfer in production.** OCR, transcription, and LLM inference all run on the Mac Studio. OpenRouter is reachable only under `ENV=TEST`, which removes the entire `KVKK m. 9` (yurt dışı aktarım) surface from the production architecture. See Privacy.
 - **Two-factor framing without per-user MFA.** The clinic's 2018/10 obligation for special-category data is met by the combination of the workstation's enrolled device credential (something you have, bound by default to one named user — see Deployment) and the user's password (something you know). The framing depends on per-user device binding, idle session lock (see Workstation client → Session security), and step-up reauthentication for high-risk operations (see Wire protocol) all holding — not on any one of them in isolation.
-- **Security policy template, shipped with the appliance.** Anamnez ships a fill-in-the-blank clinic security policy template that explicitly documents the two-factor framing above, so a Kurul inspection finds the position written down and consistent with operational reality rather than reconstructed after the fact.
+- **Security policy template, shipped with the appliance.** Anamnez ships a fill-in-the-blank clinic security policy template that explicitly documents the two-factor framing above, so a Kurul inspection finds the position written down and consistent with operational reality rather than reconstructed after the fact. The admin UI fills the template (two-factor framing, idle-lock config, physical security custodian, breach response contacts) and renders to PDF for the clinic's compliance file.
+- **Patient aydınlatma metni template.** Anamnez ships a fill-in-the-blank KVKK m. 10 + Aydınlatma Tebliği patient-notice template that the clinic admin completes (clinic name, address, VKN, KEP, contact channel, transcription/AI disclosures) and the daemon renders to PDF for patient intake. Acknowledgment is optionally recorded on the patient row at first encounter via `patient.notice_acknowledged_at`.
 - **DPA allocation, explicit.** The anamnez–clinic supply / data-processing agreement allocates cleanly: anamnez owns logical software controls (cert pinning, device credential lifecycle, idle-lock implementation, audit logging, encryption at rest); the clinic owns physical and operational security of the Mac Studio and workstations, ensures users do not share accounts, signs personnel under confidentiality agreements before provisioning, and applies compensating controls when shared-device mode is enabled.
+
+### KVKK-derived features
+
+The KVKK mapping in `KVKK.md` translates into the following spec-level features that ship in MVP:
+
+- **Patient dossier export.** Owner / collaborator can generate a PDF dossier of a patient's full record — demographics, problem list, allergies, medications, encounters timeline, observations grouped by encounter, source-document attachments inline. Requires step-up reauthentication; audited as `patient.export`. Satisfies KVKK m. 11/b and Hasta Hakları Yön. m. 42.
+- **Erasure-via-suppression workflow.** Admin UI workflow for KVKK m. 11/e requests: select patient, capture justification, mark `patient.suppressed_at`. Suppressed rows are invisible everywhere except audit and the retention sweep, which hard-deletes them when the 20-year clinical horizon passes. See Storage → Retention and destruction.
+- **Explicit-consent tracking.** `patient_consent` table records the narrow cases that require açık rıza beyond KVKK m. 6/3 — lawyer transfer (KSV Yön. m. 10), non-anonymized research, external referral. Admin actions in those flows require a present, non-revoked `patient_consent` row of the matching purpose.
+- **Breach scope report.** `anamnez admin breach-report` CLI and an admin UI page take `(auth_session_id)` or `(user_id, time_range)` and emit the list of affected patients, observations, and actions taken, both as on-screen tables and a downloadable CSV. Supports KVKK m. 12/5 + 2019/10 (72-hour Kurul notification).
+- **Periodic access review.** Admin dashboard widget lists `patient_access` rows whose user has not touched the patient (via `audit_log`) in ≥6 months. A monthly nag banner reminds admin to review; clearing it writes an `access_review.completed` audit entry.
+- **Ownership transfer at user disable.** `anamnez admin disable-user` refuses to proceed while the target user is the sole owner of any patient; admin must designate a successor (or bulk-reassign to themselves) before the disable goes through. Audited as `patient.ownership_transfer`.
 
 ## Storage
 
 ### Engine
 
-SQLite, embedded in the server process. Chosen over DuckDB (built for analytics on top of OLTP, not as OLTP), embedded Postgres (overweight for clinic scale), Sled/redb/fjall (KV stores — would kill the NL→SQL feature), and SurrealDB (too young to be the system of record for medical data).
+SQLite, embedded in the server process. Chosen over DuckDB (built for analytics on top of OLTP, not as OLTP), embedded Postgres (overweight for clinic scale), Sled/redb/fjall (KV stores — no relational queries against clinical data, and reference-data joins are central to autocomplete and reporting), and SurrealDB (too young to be the system of record for medical data).
 
 Non-default settings enforced from day one:
 
@@ -267,6 +311,8 @@ Files on disk, not BLOBs in SQLite. Stored in a content-addressed directory: `�
 ### Code systems
 
 Clinical codes — drug substances, drug products, diagnoses, labs, procedures, symptoms — live in lookup tables in the same SQLite DB as the clinical data. Every `observation`, `medication`, and `allergy` row points at one of these tables via `(code_system, code)`. Free-text-only entries are not allowed for these fields; the `display_text` column captures what the doctor typed, the coded fields capture what it maps to.
+
+Enforcement of `(code_system, code)` validity is in `anamnez-core` at every clinical write. SQLite has no native discriminated-FK construct (an FK cannot fan out to one of N tables based on a discriminator column), so the typed Rust API is the single chokepoint: every `observation::create` / `medication::create` / `allergy::create` looks up the pair in the relevant lookup table before insert and returns a typed error on miss. No other code path writes these tables.
 
 **These reference data sets have been mined and live under `code-systems/<system>/` at the repo root.** Each system directory holds `normalized.csv` (UTF-8, columns matching the schemas below), the verbatim upstream downloads under `raw/`, a `source.md` documenting provenance / license / row counts / known gaps, and one or more idempotent Python scripts that rebuild `normalized.csv` from `raw/`. The signed code-systems bundle (see Bundle distribution below) is built from these CSVs. The full layout, refresh procedure, and unfixable gaps are described in Pre-bundle source data below.
 
@@ -299,14 +345,15 @@ drug_atc {
 }
 
 drug_titck {
-  barcode PK,                      // GTIN-13, what's on the box
-  titck_product_code UNIQUE,       // TİTCK registration number
+  barcode PK,                      // GTIN-13, what's on the box — one row per package-size barcode
+  titck_product_code INDEX,        // TİTCK registration number — one registration can map to N barcoded package sizes
   trade_name,                      // 'Glucophage 500 mg Tablet'
   manufacturer,
   atc_code FK → drug_atc,
   active_substance_tr,
   dosage_form,                     // 'film tablet', 'şurup', ...
   strength_value, strength_unit,   // 500, 'mg'
+  strength_text,                   // verbatim label string, e.g. '0.75 MG' — kept for display fidelity when value/unit do not round-trip the box label
   package_size_text,               // '30 tablet'
   rx_only,                         // boolean
   reimbursable,                    // SGK list membership
@@ -363,7 +410,7 @@ The mined data lives at the repo root under `code-systems/<system>/`, one direct
 - `normalized.csv` — UTF-8, columns matching the lookup-table schema above, one row per code. This is the input to the bundle build.
 - `raw/` — verbatim upstream files (Excel, CSV, PDF, HTML), kept so that re-normalization is reproducible and so that diffs against upstream changes are auditable.
 - `source.md` — provenance: upstream URL, fetch date, source-file effective date, license, row count, schema divergences, known gaps. **Canonical for that system; this README is the index.**
-- One or more idempotent Python scripts — `normalize.py`, `extract.py`, `build_normalized.py`, `extract_llm_inputs.py`, or `merge_llm_translations.py` — that derive `normalized.csv` from `raw/`. Re-runnable: drop a fresher file into `raw/`, re-run the script, commit. Some systems chain multiple scripts (ATC: `normalize.py` → `backfill_tr_from_titck.py` → `merge_llm_translations.py`; LOINC: `normalize.py` → `extract_llm_inputs.py` → per-chunk agent runs → `merge_llm_translations.py`); the order is documented in each system's `source.md`.
+- For most systems, one or more idempotent Python scripts — `normalize.py`, `extract.py`, `build_normalized.py`, `extract_llm_inputs.py`, or `merge_llm_translations.py` — derive `normalized.csv` from `raw/`. Re-runnable: drop a fresher file into `raw/`, re-run the script, commit. Some systems chain multiple scripts (ATC: `normalize.py` → `backfill_tr_from_titck.py` → `merge_llm_translations.py`; LOINC: `normalize.py` → `extract_llm_inputs.py` → per-chunk agent runs → `merge_llm_translations.py`); the order is documented in each system's `source.md`. **Exceptions: SUT and SKRS-VP** are small enough that their `normalized.csv` files were hand-curated from the upstream sources; their `source.md` files document the manual procedure, and refresh means redoing the curation by hand.
 
 Two cross-system overlay scripts join one system's data into another and are re-run after either side refreshes:
 
@@ -387,6 +434,8 @@ Bootstrap from a fresh clone: nothing to do — the CSVs are committed. To re-de
 
 Reference tables are not editable by clinics. They are populated at first boot from a signed bundle that we produce and ship: `anamnez-codesystems-<YYYYqN>.tar.zst.sig`. The bundle contains all reference tables plus a manifest with version, checksum, and source revision dates (TİTCK as of X, ICD-10-TM revision Y, LOINC version Z, SUT version W, `ANAMNEZ-SYM` revision N).
 
+Bundles are signed with a single long-lived Ed25519 keypair held by anamnez. The public key is compiled into the `anamnez` binary at build time; the daemon verifies every bundle against the embedded pubkey before any DB mutation. Key rotation, if ever required (e.g. suspected key compromise), ships as a new daemon binary version — clinics update both binary and bundle together.
+
 Two delivery paths to the Mac Studio:
 
 1. **Online pull** — `anamnez admin update-codesystems` reaches our distribution host (the one outbound connection allowed) and applies the latest signed bundle.
@@ -400,8 +449,8 @@ Cadence target: one bundle per quarter covering all systems. TİTCK changes most
 
 Both the doctor's autocomplete and the LLM extractor query the same reference tables.
 
-- Autocomplete is SQLite FTS5 over the relevant display columns (`display_tr`, `trade_name`, `active_substance_tr`, `description_tr`). Pure local, no model.
-- LLM extraction receives the source text plus the relevant rows (or category slice) of the reference tables in its prompt, and returns a JSON list of `(code_system, code, display_text, confidence)`. The extractor never invents codes — if no match exists, `code_system` is `null`, the `display_text` is preserved, and a human reviewer assigns the code before the observation moves from `preliminary` to `final`.
+- Autocomplete is SQLite FTS5 over the relevant display columns (`display_tr`, `trade_name`, `active_substance_tr`, `description_tr`). Pure local, no model. Turkish casing forces a pre-fold step: writes and queries both pass through Turkish-locale casefold (`İ`→`i`, `I`→`ı`, NFC) before they touch FTS5 — `unicode61`'s default mapping would let `İlaç` and `ilaç` miss each other. Diacritic stripping stays off (`remove_diacritics=0`); `ş`/`s` and `ç`/`c` are distinct letters in Turkish.
+- LLM extraction receives the source text plus the relevant rows (or category slice) of the reference tables in its prompt, and returns a JSON list of candidate observations. Each candidate carries `code_system`, `code`, `display_text` (verbatim source span), `text_span` (character offsets into the source, used to populate the `extraction` row), `effective_period_start`, `effective_period_end` (nullable), one of `value_quantity` / `value_string` / `value_codeable` as appropriate to the observation type, and `confidence`. The extractor never invents codes — if no match exists, `code_system` and `code` are `null`, the `display_text` is preserved, and a human reviewer assigns the code before the observation moves from `preliminary` to `final`. Manual entry follows the same convention: when autocomplete returns no match, the doctor saves the observation as `preliminary` with `code/code_system = null` and `display_text` carrying the literal input; `final` always requires a code.
 
 ### Audit log integrity
 
@@ -409,20 +458,29 @@ The `audit_log` table is append-only at three layers:
 
 1. **Application** — only `audit_log::append()` exists; there is no update or delete function.
 2. **SQLite** — a `BEFORE UPDATE/DELETE ON audit_log` trigger that calls `RAISE(ABORT, 'audit immutable')`.
-3. **Tamper-evidence** — each row carries `prev_hash` and `row_hash = H(prev_hash, occurred_at, actor_user_id, action, target_type, target_id, patient_id, canonical(metadata))`. The server verifies the chain head on startup and panics with the offending row id on mismatch.
+3. **Tamper-evidence** — each row carries `prev_hash` and `row_hash = H(prev_hash, id, occurred_at, actor_user_id, auth_session_id, action, target_type, target_id, patient_id, canonical(metadata))`. The server verifies the chain head on startup and panics with the offending row id on mismatch.
 
-Retention is indefinite. No rotation.
+Audit log retention is 10 years from `occurred_at`. The nightly retention sweep (see Retention and destruction) hard-deletes rows past that horizon and writes one `audit_log.retention_sweep` entry per pass recording the high-water mark of swept `occurred_at`. Chain verification on startup runs from the most recent `retention_sweep` row forward, so deleted history does not break verification of the surviving chain.
+
+### Retention and destruction
+
+Anamnez ships with a default retention policy compiled in. Clinics cannot disable retention; the nightly sweep is unconditional.
+
+| Data | Retention | Trigger |
+|---|---|---|
+| Observation, source_document, extraction, allergy, medication, encounter | 20 years | Patient's last clinical activity, or `deceased_at`, whichever is later |
+| `audit_log` | 10 years (fixed) | `occurred_at` |
+| `auth_session` | Expiry + 90 days | `refresh_expires_at` |
+| Disabled `user` account | 10 years after `disabled_at` | Hard delete at the horizon; `actor_user_id` foreign-key references remain valid up to that point |
+| Backups | 1 year rolling (52 weekly + 12 monthly snapshots) | Snapshot time |
+
+A nightly job (`anamnez retention sweep`, scheduled by launchd) hard-deletes rows past their horizon and writes one `audit_log.retention_sweep` row per pass with counts by table. Defaults come from the hekimlik 20-year clinical record obligation and KSV Yön. m. 11; see `KVKK.md §13` for the full legal rationale.
+
+**Erasure requests (KVKK m. 11/e) use suppression, not hard delete.** When an admin approves an erasure request, the affected `patient.suppressed_at` is set with a justification. Suppressed patients are invisible everywhere except `audit_log` and the retention sweep; their clinical rows are not deleted until the 20-year horizon passes. This reconciles the patient's right of erasure with the clinician's record-keeping obligation. Anonymization is not offered in MVP — suppression is the only erasure path.
 
 ### Concurrency
 
-Optimistic locking on every mutable clinical row. `observation` and `patient` each carry a `version INTEGER NOT NULL` column. Writes are `UPDATE … SET …, version = version + 1 WHERE id = ? AND version = ?`. Zero rows affected means a concurrent edit happened; the conflict surfaces to the client as "record changed, here is the new state, reapply your change." Last-write-wins is not used anywhere in clinical data.
-
-### NL→SQL safety
-
-The LLM-driven query path is sandboxed two ways:
-
-1. Queries run on a dedicated read-only connection with `PRAGMA query_only = 1`, plus a watchdog thread that calls `sqlite3_interrupt` after a configured timeout, and a hard row limit.
-2. The LLM never sees the base tables. Its schema prompt and its query target are views scoped to the caller's `patient_access`, e.g. `accessible_observations = SELECT * FROM observation WHERE patient_id IN (SELECT patient_id FROM patient_access WHERE user_id = :current_user)`. Access enforcement is in SQL, not in post-filtering — the LLM cannot phrase a query that escapes the view.
+Optimistic locking on every mutable clinical row. `observation`, `patient`, `encounter`, `allergy`, `medication`, `source_document`, and `patient_consent` each carry a `version INTEGER NOT NULL` column. Writes are `UPDATE … SET …, version = version + 1 WHERE id = ? AND version = ?`. Zero rows affected means a concurrent edit happened; the conflict surfaces to the client as "record changed, here is the new state, reapply your change." Last-write-wins is not used anywhere in clinical data.
 
 ## Deployment
 
@@ -435,7 +493,7 @@ Anamnez ships as two native Rust binaries:
 
 Both binaries are signed once by us and distributed to every clinic. The workstation client is the same artifact for every clinic — nothing about it is per-deployment. There is no browser involved in the normal clinical workflow; the OS trust store is never touched.
 
-For MVP, all networking stays inside the clinic LAN:
+No inbound surface from outside the clinic LAN is exposed in MVP:
 
 - The Mac Studio gets a stable LAN address (static DHCP reservation, or an mDNS name like `anamnez.local`).
 - The server presents a self-signed TLS certificate generated on first boot of that specific Mac Studio.
@@ -444,9 +502,20 @@ For MVP, all networking stays inside the clinic LAN:
 
 The bootstrap flow:
 
-1. First boot of the Mac Studio runs a setup wizard: generates the server cert, creates the first admin credential, and prints a recovery code on screen for the admin to record physically.
+1. First boot of the Mac Studio runs a setup wizard: generates a long-lived (25-year) Ed25519 keypair that serves both as the server's TLS identity and as the local CA for signing workstation client certificates, creates the first admin credential, and prints a recovery code on screen for the admin to record physically.
 2. The admin uses the anamnez admin UI to "Add workstation". The admin selects which user the workstation is being issued to: by default a workstation is bound to one named user, so that the device credential plus that user's password are the two factors of KVKK 2018/10 (see Compliance). A shared-workstation mode exists as an explicit opt-in toggle for cases like a front desk or a rotating exam room, with an in-UI warning that this weakens the two-factor framing and obligates the clinic to compensate via stricter idle lock and operational controls. The flow then produces a short enrollment string — a URL like `anamnez://enroll?host=10.0.0.5&fingerprint=AB:CD:…&token=…` — that contains everything the workstation client needs: where to find the server, which cert fingerprint to trust, and a one-time token to exchange for a long-lived device credential.
-3. The admin sends the enrollment string to the workstation user through whatever channel is convenient — copy/paste, email, internal chat. The user opens the already-installed anamnez client, pastes the string, and is done. The client connects to the server, verifies the pinned fingerprint, exchanges the token, and stores its device credential locally.
+3. The admin sends the enrollment string to the workstation user through whatever channel is convenient — copy/paste, email, internal chat. The user opens the already-installed anamnez client, pastes the string, and is done. The client connects to the server, verifies the pinned fingerprint, exchanges the one-time token for a freshly-issued client certificate (signed by the server's CA, valid 25 years, `CN = device_id`), and stores the cert + private key in the OS secret store.
+
+### Server certificate and CA
+
+The first-boot wizard generates a single long-lived (25-year) Ed25519 keypair on the Mac Studio. The same key serves two roles:
+
+- It is the server's TLS identity: workstations pin its public-key fingerprint at enrollment, and every subsequent connection validates against that pin.
+- It is the local CA that signs workstation client certificates at enrollment. There is no external PKI involved — the server is the entire trust root for its own clinic.
+
+Each workstation is issued a freshly-generated client cert at enrollment time, with `CN = device_id` and a 25-year validity matching the server's. Revocation is by row, not CRL: the server keeps an in-memory deny set of revoked `device_id`s loaded from the workstation table at startup, and rejects any TLS handshake whose client cert maps to a revoked or deleted device. mTLS handshakes therefore live or die by the server's own bookkeeping; we do not need OCSP, a CRL distribution point, or an external revocation channel.
+
+**Cert rotation is rare and disruptive.** The expected lifetime of the keypair is the lifetime of the appliance. If rotation becomes necessary — suspected key compromise, hardware migration where the SEP-wrapped passphrase path is no longer viable, or a forced cryptographic upgrade — the procedure is `anamnez admin rotate-server-cert`, which invalidates every workstation enrollment in the same transaction. The admin then re-issues an enrollment string per workstation and the clinic re-enrolls. This is deliberately heavyweight: routine in-band rotation would be an attack surface we'd rather not maintain.
 
 ### Key custody
 
@@ -495,7 +564,7 @@ HTTPS + JSON over the pinned-fingerprint TLS connection. Server-Sent Events on a
 Every request is authenticated as `(device, user)`:
 
 - **Device** — mTLS using the client certificate issued during enrollment.
-- **User** — bearer token in `Authorization: Bearer …`. Access tokens are short-lived (15 minutes) and held in memory only. Refresh tokens are longer-lived (12 hours), stored in the OS secret store, and rotated on each use — one-time-use, so replay of a leaked refresh fails. Admin revocation or password change invalidates the refresh server-side; the device dies within ≤15 minutes on its next refresh attempt.
+- **User** — bearer token in `Authorization: Bearer …`. Access tokens are short-lived (15 minutes) and held in memory only. Refresh tokens are longer-lived (12 hours), stored in the OS secret store, and rotated on each use — one-time-use, so replay of a leaked refresh fails. Each `auth_session` also carries a 30-day `absolute_expires_at` set at login; once that horizon passes, refresh fails and the user must log in again regardless of recent activity. Admin revocation or password change sets `auth_session.revoked_at`; the server checks this column on every authenticated request, so revocation takes effect immediately regardless of access-token lifetime. The DB read per request is a single indexed lookup — negligible at clinic scale.
 
 **Step-up reauthentication.** Some operations require the user to re-enter their password immediately before the action, regardless of how recently they logged in: creating or modifying a user, granting `patient_access` to a user who did not previously have access to that patient (the creator-as-owner case is exempt), disabling a user or revoking a workstation, exporting a patient dossier or downloading query results above a row threshold, changing retention or destruction policy, and generating a workstation enrollment string. No second factor — just re-entry of the existing password. The point is to defeat "walked-away unlocked screen" and session token replay against the most damaging actions, without adding an MFA dependency.
 
@@ -554,8 +623,8 @@ The codebase is one Cargo workspace. Functionality lives in library crates; bina
 | Crate | Kind | Builds for | Role |
 |---|---|---|---|
 | `anamnez-protocol` | lib | native + `wasm32` | Wire types and error envelope. Shared by server, CLI, and client. The one crate that must stay platform-agnostic. |
-| `anamnez-core` | lib | native | All server-side functionality: DB access, auth, observation/patient/encounter logic, audit chain, key custody glue, blob store, LLM/OCR/transcription traits and impls, NL→SQL. No HTTP, no binary entrypoint. |
-| `anamnez` | bin | native | The Mac Studio binary. Multi-tool with subcommands — `serve` (long-running daemon, called by launchd), `init` (first-boot wizard), `migrate`, `backup`, `restore`, `audit verify`, `health`, `admin add-user`, `admin disable-user`, `admin reset-password`, `admin enroll-workstation`. Every subcommand drives `anamnez-core` directly; `serve` happens to expose it over HTTP, the rest call the same library in-process. |
+| `anamnez-core` | lib | native | All server-side functionality: DB access, auth, observation/patient/encounter logic, audit chain, key custody glue, blob store, LLM/OCR/transcription traits and impls. No HTTP, no binary entrypoint. |
+| `anamnez` | bin | native | The Mac Studio binary. Multi-tool with subcommands — `serve` (long-running daemon, called by launchd), `init` (first-boot wizard), `migrate`, `backup`, `restore`, `audit verify`, `retention sweep`, `health`, `admin add-user`, `admin disable-user` (refuses to proceed while the target is sole owner of any patient; admin must designate a successor), `admin reset-password`, `admin enroll-workstation`, `admin breach-report`, `admin rotate-server-cert`. Every subcommand drives `anamnez-core` directly; `serve` happens to expose it over HTTP, the rest call the same library in-process. |
 | `anamnez-client-core` | lib | native + `wasm32` | Client-side: API client, session and refresh logic, conflict resolution, view state machine. No GUI framework imports. Native build target exists so it can be tested in `cargo nextest`. |
 | `anamnez-workstation-ui` | lib | `wasm32` | Leptos components and view logic. |
 | `anamnez-workstation` | bin | native | Tauri shell. Hosts the Leptos WASM, exposes native commands (OS secret store, mic capture via `cpal`, file dialogs, `anamnez://` deep-link handler). The only crate that imports a GUI framework. |

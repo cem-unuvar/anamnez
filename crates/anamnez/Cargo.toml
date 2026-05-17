@@ -1,0 +1,91 @@
+[package]
+name = "anamnez"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "anamnez"
+path = "src/main.rs"
+
+[dependencies]
+anamnez-core = { workspace = true }
+anamnez-protocol = { workspace = true, features = ["from-core"] }
+
+# CLI + config + logging
+clap = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Async runtime + streams
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+futures-util = { workspace = true }
+async-trait = { workspace = true }
+
+# HTTP + TLS
+axum = { workspace = true }
+axum-extra = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+rcgen = { workspace = true }
+x509-parser = { workspace = true }
+
+# `rustls` is brought in transitively too, but we need its `crypto::ring` provider
+# in main(), so depend on it directly.
+
+# Misc
+serde = { workspace = true }
+serde_json = { workspace = true }
+secrecy = { workspace = true }
+jiff = { workspace = true }
+parking_lot = { workspace = true }
+uuid = { workspace = true }
+bytes = { workspace = true }
+nix = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+reqwest = { workspace = true }
+eventsource-stream = { workspace = true }
+assert_cmd = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+anamnez-core = { workspace = true, features = ["test-support"] }
+rcgen = { workspace = true }
+rustls-pemfile = { workspace = true }
+rustls = { workspace = true }
+rusqlite = { workspace = true }
+serial_test = { workspace = true }
+
+[[test]]
+name = "boot"
+path = "tests/boot.rs"
+
+[[test]]
+name = "mtls"
+path = "tests/mtls.rs"
+
+[[test]]
+name = "auth"
+path = "tests/auth.rs"
+
+[[test]]
+name = "clinical"
+path = "tests/clinical.rs"
+
+[[test]]
+name = "stepup"
+path = "tests/stepup.rs"

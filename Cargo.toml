@@ -1,0 +1,133 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+default-members = ["crates/anamnez-core"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.93.1"
+license = "Proprietary"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+doc_markdown = "allow"
+unused_async = "allow"
+too_many_arguments = "allow"
+must_use_candidate = "allow"
+new_without_default = "allow"
+needless_pass_by_value = "allow"
+single_match_else = "allow"
+err_expect = "allow"
+match_wild_err_arm = "allow"
+manual_let_else = "allow"
+type_complexity = "allow"
+collapsible_if = "allow"
+too_many_lines = "allow"
+similar_names = "allow"
+cast_possible_wrap = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_lossless = "allow"
+match_same_arms = "allow"
+redundant_closure = "allow"
+redundant_closure_for_method_calls = "allow"
+float_cmp = "allow"
+unnested_or_patterns = "allow"
+explicit_iter_loop = "allow"
+uninlined_format_args = "allow"
+
+[workspace.dependencies]
+# DB
+rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl", "modern_sqlite", "trace", "blob", "serde_json"] }
+refinery = { version = "0.8", features = ["rusqlite"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
+
+# Auth + crypto
+argon2 = { version = "0.5", features = ["std"] }
+ed25519-dalek = { version = "2.1", features = ["pkcs8", "rand_core"] }
+aes-gcm = { version = "0.10", features = ["std"] }
+sha2 = "0.10"
+blake3 = "1.5"
+zeroize = { version = "1.8", features = ["derive"] }
+subtle = "2.6"
+secrecy = "0.10"
+rand = "0.8"
+rand_chacha = "0.3"
+
+# Serde
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_with = "3"
+
+# Time
+jiff = { version = "0.2", features = ["serde"] }
+
+# Errors + logs
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Async
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "time", "process", "signal", "io-util", "net"] }
+async-trait = "0.1"
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures-util = "0.3"
+
+# CSV
+csv = "1.3"
+
+# Caches + sync primitives
+moka = { version = "0.12", features = ["sync"] }
+parking_lot = "0.12"
+
+# UUID
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Unicode
+unicode-normalization = "0.1"
+
+# HTTP server stack (daemon)
+axum = { version = "0.7", default-features = false, features = ["http1", "json", "tokio", "macros"] }
+axum-extra = { version = "0.9", features = ["typed-header"] }
+hyper = { version = "1.4", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.5", features = ["trace", "limit"] }
+tokio-rustls = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["ring", "tls12", "std"] }
+rustls-pemfile = "2"
+rcgen = { version = "0.13", features = ["pem"] }
+x509-parser = "0.16"
+bytes = "1"
+nix = { version = "0.29", features = ["signal", "process"] }
+
+# CLI + config
+clap = { version = "4.5", features = ["derive", "env"] }
+toml = "0.8"
+
+# Internal crates
+anamnez-protocol = { path = "crates/anamnez-protocol" }
+anamnez-core = { path = "crates/anamnez-core" }
+anamnez-client-core = { path = "crates/anamnez-client-core" }
+anamnez-workstation-ui = { path = "crates/anamnez-workstation-ui" }
+
+# Dev deps shared
+assert_matches = "1.5"
+proptest = "1.5"
+tempfile = "3"
+insta = { version = "1.40", features = ["json", "redactions"] }
+pretty_assertions = "1.4"
+serial_test = "3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots", "stream"] }
+eventsource-stream = "0.2"
+assert_cmd = "2"

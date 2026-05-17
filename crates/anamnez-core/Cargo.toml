@@ -1,0 +1,82 @@
+[package]
+name = "anamnez-core"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+default = []
+test-support = ["dep:tempfile"]
+
+[dependencies]
+# DB
+rusqlite = { workspace = true }
+refinery = { workspace = true }
+r2d2 = { workspace = true }
+r2d2_sqlite = { workspace = true }
+
+# Crypto + auth
+argon2 = { workspace = true }
+ed25519-dalek = { workspace = true }
+aes-gcm = { workspace = true }
+sha2 = { workspace = true }
+blake3 = { workspace = true }
+zeroize = { workspace = true }
+subtle = { workspace = true }
+secrecy = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+
+# Serde
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_with = { workspace = true }
+
+# Time
+jiff = { workspace = true }
+
+# Errors + logs
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# CSV + caches + sync primitives
+csv = { workspace = true }
+moka = { workspace = true }
+parking_lot = { workspace = true }
+
+# UUID
+uuid = { workspace = true }
+
+# Unicode
+unicode-normalization = { workspace = true }
+
+# Optional, behind `test-support` feature
+tempfile = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+
+[build-dependencies]
+ed25519-dalek = { workspace = true }
+
+[dev-dependencies]
+# Self-dep with feature enabled so integration tests under `tests/` see `test_support`.
+anamnez-core = { path = ".", features = ["test-support"] }
+assert_matches = { workspace = true }
+proptest = { workspace = true }
+tempfile = { workspace = true }
+insta = { workspace = true }
+pretty_assertions = { workspace = true }
+secrecy = { workspace = true }
+rusqlite = { workspace = true }
+serial_test = { workspace = true }
