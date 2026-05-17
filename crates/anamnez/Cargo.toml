@@ -55,11 +55,14 @@ uuid = { workspace = true }
 bytes = { workspace = true }
 nix = { workspace = true }
 thiserror = { workspace = true }
+sha2 = { workspace = true }
+rusqlite = { workspace = true }
 
 [dev-dependencies]
 reqwest = { workspace = true }
 eventsource-stream = { workspace = true }
 assert_cmd = { workspace = true }
+predicates = "3"
 tempfile = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }
@@ -69,6 +72,8 @@ rustls-pemfile = { workspace = true }
 rustls = { workspace = true }
 rusqlite = { workspace = true }
 serial_test = { workspace = true }
+uuid = { workspace = true }
+secrecy = { workspace = true }
 
 [[test]]
 name = "boot"
@@ -89,3 +94,7 @@ path = "tests/clinical.rs"
 [[test]]
 name = "stepup"
 path = "tests/stepup.rs"
+
+[[test]]
+name = "cli"
+path = "tests/cli.rs"

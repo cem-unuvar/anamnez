@@ -60,6 +60,10 @@ uuid = { workspace = true }
 # Unicode
 unicode-normalization = { workspace = true }
 
+# TLS cert minting — `init` mints the server cert/CA, `admin rotate-server-cert`
+# mints replacements, daemon-side enrollment exchange mints workstation certs.
+rcgen = { workspace = true }
+
 # Optional, behind `test-support` feature
 tempfile = { workspace = true, optional = true }
 

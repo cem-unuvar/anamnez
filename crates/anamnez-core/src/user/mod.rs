@@ -130,6 +130,71 @@ pub fn get(db: &Database, id: UserId) -> Result<Option<User>> {
     db.with_reader(|conn| load_in_conn(conn, id))
 }
 
+/// Look up a user by email (case-sensitive — matches the unique index).
+pub fn find_by_email(db: &Database, email: &str) -> Result<Option<User>> {
+    db.with_reader(|conn| {
+        let id_str: Option<String> = conn
+            .query_row(
+                "SELECT id FROM user WHERE email = ?1",
+                params![email],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(s) = id_str else {
+            return Ok(None);
+        };
+        let uuid = uuid::Uuid::parse_str(&s).map_err(|_| Error::Invariant("user.id not a UUID"))?;
+        load_in_conn(conn, UserId(uuid))
+    })
+}
+
+/// Reset a user's password. In one transaction:
+/// 1. Argon2id-hash the new password.
+/// 2. Update `user.password_hash`.
+/// 3. Revoke every active `auth_session` for the target.
+/// 4. Audit `Action::UserModify`.
+///
+/// SPEC §Tenancy: "password change sets revoked_at" — every request after this
+/// returns rejected, regardless of access-token lifetime.
+pub fn reset_password(
+    db: &Database,
+    admin: UserId,
+    target: UserId,
+    new_password: SecretString,
+) -> Result<()> {
+    let new_hash = password::hash(new_password)?;
+    let now = db.clock().now();
+    db.with_writer(|conn| {
+        let affected = conn.execute(
+            "UPDATE user SET password_hash = ?2 WHERE id = ?1",
+            params![target.as_uuid().to_string(), new_hash],
+        )?;
+        if affected == 0 {
+            return Err(Error::NotFound);
+        }
+        // Revoke every active session for the target.
+        conn.execute(
+            "UPDATE auth_session SET revoked_at = ?2 \
+             WHERE user_id = ?1 AND revoked_at IS NULL",
+            params![target.as_uuid().to_string(), now.to_string()],
+        )?;
+        audit::append_in_conn(
+            conn,
+            now,
+            AppendInput {
+                actor_user_id: Some(admin),
+                auth_session_id: None,
+                action: Action::UserModify,
+                target_type: "user".into(),
+                target_id: target.as_uuid().to_string(),
+                patient_id: None,
+                metadata: json!({"action": "reset_password", "sessions_revoked": true}),
+            },
+        )?;
+        Ok(())
+    })
+}
+
 fn load_in_conn(conn: &rusqlite::Connection, id: UserId) -> Result<Option<User>> {
     let row = conn
         .query_row(

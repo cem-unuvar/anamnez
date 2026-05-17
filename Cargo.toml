@@ -47,7 +47,7 @@ uninlined_format_args = "allow"
 
 [workspace.dependencies]
 # DB
-rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl", "modern_sqlite", "trace", "blob", "serde_json"] }
+rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl", "modern_sqlite", "trace", "blob", "serde_json", "backup"] }
 refinery = { version = "0.8", features = ["rusqlite"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.25"

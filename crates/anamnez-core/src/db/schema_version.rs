@@ -3,7 +3,7 @@
 use crate::error::{Error, Result};
 
 /// Most recent migration version embedded in this binary.
-pub const BINARY_SCHEMA_VERSION: u32 = 5;
+pub const BINARY_SCHEMA_VERSION: u32 = 6;
 
 /// Refuses to boot with `Error::SchemaVersionMismatch` if the DB's applied version
 /// is not exactly `BINARY_SCHEMA_VERSION`. Called after migrations have run.
