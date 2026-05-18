@@ -365,3 +365,144 @@ fn load_in_conn(conn: &rusqlite::Connection, id: PatientId) -> Result<Option<Ver
         .optional()?;
     Ok(row)
 }
+
+/// Lightweight projection for the list view: demographics + the caller's
+/// access level. Suppressed rows are filtered out at the SQL level.
+#[derive(Debug, Clone)]
+pub struct PatientListRow {
+    pub id: PatientId,
+    pub mrn: Option<String>,
+    pub given_names: String,
+    pub family_name: String,
+    pub preferred_name: Option<String>,
+    pub date_of_birth: jiff::civil::Date,
+    pub sex_assigned_at_birth: SexAssignedAtBirth,
+    pub access_level: crate::patient_access::AccessLevel,
+    pub updated_at: Timestamp,
+    pub deceased_at: Option<Timestamp>,
+    pub archived_at: Option<Timestamp>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PatientListQuery {
+    /// Free-text filter applied case-insensitively against given_names, family_name,
+    /// and mrn. NFC-normalized in the caller; passed through here verbatim.
+    pub q: Option<String>,
+    /// If false, `archived_at IS NOT NULL` rows are excluded.
+    pub include_archived: bool,
+    /// Caller-requested limit; clamped to [1, 200].
+    pub limit: Option<u32>,
+}
+
+const PATIENT_LIST_MAX: u32 = 200;
+
+/// List patients the viewer has any `patient_access` row for. Suppressed rows
+/// are always excluded (KVKK m. 11/e — invisible everywhere except audit and
+/// the retention sweep). Results are ordered by most-recently-updated first.
+pub fn list_for_user(
+    db: &Database,
+    viewer: UserId,
+    query: PatientListQuery,
+) -> Result<Vec<PatientListRow>> {
+    db.with_reader(|conn| {
+        let limit = query.limit.unwrap_or(PATIENT_LIST_MAX).min(PATIENT_LIST_MAX);
+        let q_norm = query.q.as_ref().map(|s| s.to_lowercase());
+        let like_pat = q_norm.as_ref().map(|s| format!("%{s}%"));
+        let mut sql = String::from(
+            "SELECT p.id, p.mrn, p.given_names, p.family_name, p.preferred_name, p.date_of_birth, \
+                    p.sex_assigned_at_birth, pa.level, p.updated_at, p.deceased_at, p.archived_at \
+             FROM patient p \
+             INNER JOIN patient_access pa ON pa.patient_id = p.id \
+             WHERE pa.user_id = ?1 AND p.suppressed_at IS NULL",
+        );
+        if !query.include_archived {
+            sql.push_str(" AND p.archived_at IS NULL");
+        }
+        if like_pat.is_some() {
+            sql.push_str(
+                " AND (lower(p.given_names) LIKE ?2 OR lower(p.family_name) LIKE ?2 \
+                       OR (p.mrn IS NOT NULL AND lower(p.mrn) LIKE ?2))",
+            );
+        }
+        sql.push_str(" ORDER BY p.updated_at DESC LIMIT ?");
+        sql.push_str(if like_pat.is_some() { "3" } else { "2" });
+
+        let mut stmt = conn.prepare(&sql)?;
+        let mapper = |row: &rusqlite::Row<'_>| -> rusqlite::Result<PatientListRow> {
+            let id_str: String = row.get(0)?;
+            let dob_str: String = row.get(5)?;
+            let sex_str: String = row.get(6)?;
+            let level_str: String = row.get(7)?;
+            let updated_at_str: String = row.get(8)?;
+
+            let parse_uuid = |s: &str| {
+                uuid::Uuid::parse_str(s).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })
+            };
+            let parse_ts = |s: &str| -> rusqlite::Result<Timestamp> {
+                s.parse().map_err(|e: jiff::Error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })
+            };
+            let optional_ts = |idx: usize| -> rusqlite::Result<Option<Timestamp>> {
+                let v: Option<String> = row.get(idx)?;
+                match v {
+                    None => Ok(None),
+                    Some(s) => Ok(Some(parse_ts(&s)?)),
+                }
+            };
+
+            Ok(PatientListRow {
+                id: PatientId(parse_uuid(&id_str)?),
+                mrn: row.get(1)?,
+                given_names: row.get(2)?,
+                family_name: row.get(3)?,
+                preferred_name: row.get(4)?,
+                date_of_birth: jiff::civil::Date::strptime("%Y-%m-%d", &dob_str).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?,
+                sex_assigned_at_birth: SexAssignedAtBirth::parse(&sex_str).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?,
+                access_level: crate::patient_access::AccessLevel::parse(&level_str).map_err(
+                    |e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    },
+                )?,
+                updated_at: parse_ts(&updated_at_str)?,
+                deceased_at: optional_ts(9)?,
+                archived_at: optional_ts(10)?,
+            })
+        };
+        let rows: Vec<PatientListRow> = match (&like_pat, limit) {
+            (Some(p), l) => stmt
+                .query_map(params![viewer.as_uuid().to_string(), p, l], mapper)?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+            (None, l) => stmt
+                .query_map(params![viewer.as_uuid().to_string(), l], mapper)?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+        };
+        Ok(rows)
+    })
+}

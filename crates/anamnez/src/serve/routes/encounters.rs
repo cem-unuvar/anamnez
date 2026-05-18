@@ -4,11 +4,11 @@ use crate::serve::app_state::{AppState, AuthContext};
 use crate::serve::error::ApiError;
 use crate::serve::routes::patients::parse_uuid;
 use anamnez_core::encounter;
-use anamnez_core::ids::EncounterId;
+use anamnez_core::ids::{EncounterId, PatientId};
 use anamnez_protocol::encounter as p;
 use anamnez_protocol::versioned::Versioned;
 use axum::extract::{Extension, Path, State};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 
 pub fn router() -> Router<AppState> {
@@ -16,6 +16,21 @@ pub fn router() -> Router<AppState> {
         .route("/v1/encounters", post(start))
         .route("/v1/encounters/:id/finish", post(finish))
         .route("/v1/encounters/:id/cancel", post(cancel))
+        .route("/v1/patients/:id/encounters", get(list_by_patient))
+}
+
+async fn list_by_patient(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id_str): Path<String>,
+) -> std::result::Result<Json<Vec<Versioned<p::Encounter>>>, ApiError> {
+    let pid = PatientId(parse_uuid(&id_str)?);
+    let rows = encounter::list_by_patient(&state.db, auth.user_id(), pid)?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|v| Versioned::new(v.value.into(), v.version))
+            .collect(),
+    ))
 }
 
 async fn start(

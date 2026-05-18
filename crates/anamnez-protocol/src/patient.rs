@@ -1,4 +1,9 @@
+use crate::access::AccessLevel;
+use crate::allergy::Allergy;
+use crate::encounter::Encounter;
 use crate::ids::{PatientId, UserId};
+use crate::medication::Medication;
+use crate::observation::Observation;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -111,4 +116,59 @@ pub struct PatientPatch {
 pub struct UpdatePatientRequest {
     pub expected_version: i64,
     pub patch: PatientPatch,
+}
+
+/// One row in the patient list. Lighter than `Patient` — only what the list view renders.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatientListItem {
+    pub id: PatientId,
+    pub mrn: Option<String>,
+    pub given_names: String,
+    pub family_name: String,
+    pub preferred_name: Option<String>,
+    pub date_of_birth: jiff::civil::Date,
+    pub sex_assigned_at_birth: SexAssignedAtBirth,
+    /// The caller's access level on this patient. Always populated (a row is only listed
+    /// when the caller has a `patient_access` entry).
+    pub access_level: AccessLevel,
+    pub updated_at: Timestamp,
+    pub deceased_at: Option<Timestamp>,
+    pub archived_at: Option<Timestamp>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PatientListQuery {
+    /// Free-text filter applied case-insensitively against given_names/family_name/mrn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub q: Option<String>,
+    /// If true, include `archived_at IS NOT NULL` rows. Default false. Suppressed rows
+    /// are never returned regardless of this flag.
+    #[serde(default)]
+    pub include_archived: bool,
+    /// Pagination cursor — the `updated_at` of the last item from the previous page.
+    /// First page omits this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<Timestamp>,
+    /// Max rows to return. The server caps this at its own ceiling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatientListResponse {
+    pub items: Vec<PatientListItem>,
+    /// Cursor to pass as `before` for the next page. `None` if this is the last page.
+    pub next_before: Option<Timestamp>,
+}
+
+/// Bundled read-only patient view: demographics + active problems + allergies +
+/// medications + encounters. One round-trip, one consistent snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatientDetail {
+    pub patient: Patient,
+    pub access_level: AccessLevel,
+    pub problem_list: Vec<Observation>,
+    pub allergies: Vec<Allergy>,
+    pub medications: Vec<Medication>,
+    pub encounters: Vec<Encounter>,
 }

@@ -9,5 +9,51 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+default = []
+# Native-only: builds the reqwest + rustls + keyring transport. The Tauri shell
+# enables this; the wasm UI build leaves it off and uses the `transport_tauri`
+# IPC wrapper instead.
+native-transport = [
+    "dep:reqwest",
+    "dep:rustls",
+    "dep:rustls-pemfile",
+    "dep:keyring",
+    "dep:eventsource-stream",
+    "dep:tokio",
+    "dep:tokio-stream",
+    "dep:webpki-roots",
+    "dep:sha2",
+]
+
 [dependencies]
 anamnez-protocol = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+jiff = { workspace = true }
+futures-util = { workspace = true }
+secrecy = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+
+# Native-only deps (gated by `native-transport`).
+reqwest = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+rustls-pemfile = { workspace = true, optional = true }
+keyring = { version = "3", optional = true }
+eventsource-stream = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+tokio-stream = { workspace = true, optional = true }
+webpki-roots = { version = "0.26", optional = true }
+sha2 = { workspace = true, optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+serde-wasm-bindgen = "0.6"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Window", "Document"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

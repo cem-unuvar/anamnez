@@ -6,6 +6,7 @@ pub mod analysis;
 pub mod auth;
 pub mod consents;
 pub mod encounters;
+pub mod enroll;
 pub mod events;
 pub mod health;
 pub mod medications;
@@ -24,7 +25,12 @@ use tower_http::trace::TraceLayer;
 const MAX_BODY_BYTES: usize = 50 * 1024 * 1024;
 
 pub fn build(state: AppState) -> Router {
-    // Unauthenticated routes (login/refresh/health) — client-version check still applies.
+    // Reachable without a client cert. Token-authenticated only. Lives outside
+    // `require_device_id` because the workstation has no client cert at enrollment time.
+    let no_mtls = enroll::router_no_mtls();
+
+    // Unauthenticated routes (login/refresh/health) — Bearer is not required, but a
+    // client cert (and therefore `Extension<WorkstationId>`) is.
     let unauthed = Router::new()
         .merge(auth::router_unauthed())
         .merge(health::router());
@@ -47,9 +53,14 @@ pub fn build(state: AppState) -> Router {
             middleware::auth::require_auth,
         ));
 
-    Router::new()
+    let with_device = Router::new()
         .merge(unauthed)
         .merge(authed)
+        .layer(ax_mw::from_fn(middleware::device_id::require_device_id));
+
+    Router::new()
+        .merge(no_mtls)
+        .merge(with_device)
         .layer(ax_mw::from_fn_with_state(
             state.clone(),
             middleware::client_version::require_client_version,

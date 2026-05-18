@@ -97,7 +97,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 unicode-normalization = "0.1"
 
 # HTTP server stack (daemon)
-axum = { version = "0.7", default-features = false, features = ["http1", "json", "tokio", "macros"] }
+axum = { version = "0.7", default-features = false, features = ["http1", "json", "tokio", "macros", "query"] }
 axum-extra = { version = "0.9", features = ["typed-header"] }
 hyper = { version = "1.4", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }

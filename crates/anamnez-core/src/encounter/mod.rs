@@ -299,6 +299,36 @@ pub fn cancel(
     })
 }
 
+/// List all encounters on a patient. Caller must have any `patient_access` level.
+/// Ordered newest-first by `started_at`.
+pub fn list_by_patient(
+    db: &Database,
+    viewer: UserId,
+    patient_id: PatientId,
+) -> Result<Vec<Versioned<Encounter>>> {
+    db.with_reader(|conn| {
+        let lvl = level_for_in_conn(conn, viewer, patient_id)?;
+        if lvl.is_none() {
+            return Err(Error::NotFound);
+        }
+        let mut stmt = conn.prepare(
+            "SELECT id FROM encounter WHERE patient_id = ?1 ORDER BY started_at DESC",
+        )?;
+        let ids: Vec<String> = stmt
+            .query_map(params![patient_id.as_uuid().to_string()], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        let mut out = Vec::with_capacity(ids.len());
+        for s in ids {
+            let uuid = uuid::Uuid::parse_str(&s)
+                .map_err(|_| Error::Invariant("encounter.id not a UUID"))?;
+            if let Some(v) = load_in_conn(conn, EncounterId(uuid))? {
+                out.push(v);
+            }
+        }
+        Ok(out)
+    })
+}
+
 fn load_in_conn(
     conn: &rusqlite::Connection,
     id: EncounterId,

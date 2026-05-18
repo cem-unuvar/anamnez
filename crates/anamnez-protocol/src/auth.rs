@@ -1,4 +1,5 @@
 use crate::audit::UserRole;
+use crate::environment::Environment;
 use crate::ids::UserId;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,10 @@ pub struct LoginResponse {
     pub user: User,
     pub access_token: String,
     pub refresh_token: String,
+    /// Daemon environment — drives the TEST shield on the workstation.
+    pub environment: Environment,
+    /// Idle-lock policy (5..=30) sourced from the daemon's `Config`.
+    pub idle_lock_minutes: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

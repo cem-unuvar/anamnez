@@ -49,6 +49,7 @@ pub fn fresh() -> Bootstrapped {
         server_cert_pem: server.cert_pem.clone(),
         server_key_pem: server.key_pem.clone(),
         ca_cert_pem: ca.ca_cert_pem.clone(),
+        ca_key_pem: ca.ca_key_pair.serialize_pem(),
     })
     .expect("bootstrap::run");
 

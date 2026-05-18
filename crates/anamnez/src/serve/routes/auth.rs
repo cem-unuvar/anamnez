@@ -34,6 +34,8 @@ async fn login(
         user: outcome.user.into(),
         access_token: outcome.access_token.expose_secret().to_owned(),
         refresh_token: outcome.refresh_token.expose_secret().to_owned(),
+        environment: state.config.environment.into(),
+        idle_lock_minutes: state.config.idle_lock_minutes,
     }))
 }
 

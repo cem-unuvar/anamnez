@@ -88,15 +88,20 @@ async fn serve_connection(
 ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let tls = acceptor.accept(stream).await?;
     let (_io, conn) = tls.get_ref();
+    // mTLS is optional at the TLS layer (see `mtls::AnamnezClientVerifier::client_auth_mandatory`):
+    // workstations doing enrollment exchange have no client cert yet. When a cert is
+    // present, stamp the resulting `WorkstationId` onto the request extensions so the
+    // `require_device_id` middleware sees it; otherwise leave the extension off and
+    // every authed/non-enrollment route will reject with `Forbidden`.
     let device_id = conn
         .peer_certificates()
         .and_then(|certs| certs.first())
-        .and_then(|c| mtls::workstation_id_from_cert(c).ok())
-        .ok_or("client cert missing or CN not a WorkstationId")?;
+        .and_then(|c| mtls::workstation_id_from_cert(c).ok());
 
-    // Per-connection: stamp `Extension<WorkstationId>` onto every request via a
-    // tower layer that wraps the axum router.
-    let app = app.layer(axum::Extension(device_id));
+    let app = match device_id {
+        Some(id) => app.layer(axum::Extension(id)),
+        None => app,
+    };
     let svc = TowerToHyperService::new(app);
 
     let io = TokioIo::new(tls);

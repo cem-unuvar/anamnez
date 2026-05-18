@@ -7,14 +7,16 @@ use crate::serve::routes::patients::parse_uuid;
 use anamnez_core::auth::stepup::StepUpAction;
 use anamnez_core::auth::UserRole;
 use anamnez_core::ids::{PatientId, UserId, WorkstationId};
+use anamnez_core::rng::OsRng;
 use anamnez_core::{kvkk, user, workstation};
 use anamnez_protocol::events::ServerEvent;
 use axum::extract::{Extension, Path, State};
 use axum::http::HeaderMap;
 use axum::routing::{patch, post};
 use axum::{Json, Router};
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -147,24 +149,29 @@ async fn disable_user(
 }
 
 #[derive(Debug, Deserialize)]
-struct EnrollWorkstationBody {
+struct MintEnrollmentBody {
     label: String,
     mode: String, // "bound" | "shared"
     bound_user_id: Option<anamnez_protocol::ids::UserId>,
-    cert_serial: String,
-    cert_fingerprint: String,
+    /// LAN host the workstation operator will reach this daemon at, embedded in
+    /// the URI. The daemon does not validate that this resolves — it's whatever
+    /// the clinic admin types.
+    host: String,
 }
 #[derive(Debug, Serialize)]
-struct EnrollWorkstationOut {
-    id: anamnez_protocol::ids::WorkstationId,
+struct MintEnrollmentOut {
+    enrollment_id: uuid::Uuid,
+    uri: String,
+    token: String,
+    server_fingerprint_sha256: String,
 }
 
 async fn enroll_workstation(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     headers: HeaderMap,
-    Json(body): Json<EnrollWorkstationBody>,
-) -> std::result::Result<Json<EnrollWorkstationOut>, ApiError> {
+    Json(body): Json<MintEnrollmentBody>,
+) -> std::result::Result<Json<MintEnrollmentOut>, ApiError> {
     require_admin(&auth)?;
     require_stepup(
         &state,
@@ -173,18 +180,59 @@ async fn enroll_workstation(
         &headers,
     )?;
     let mode = workstation::Mode::parse(&body.mode)?;
-    let ws = workstation::enroll(
+
+    let data_dir = state
+        .config
+        .db_path
+        .parent()
+        .ok_or(ApiError(anamnez_core::Error::Invariant(
+            "db_path has no parent",
+        )))?;
+    let server_cert_pem =
+        std::fs::read_to_string(data_dir.join("tls").join("server_cert.pem"))
+            .map_err(|e| ApiError(anamnez_core::Error::Io(e)))?;
+    let fingerprint = fingerprint_sha256_hex_of_pem_leaf(&server_cert_pem)
+        .map_err(|e| ApiError(anamnez_core::Error::Invariant(e)))?;
+
+    let minted = workstation::mint_enrollment(
         &state.db,
         auth.user_id(),
-        workstation::NewWorkstation {
+        &OsRng,
+        workstation::NewEnrollment {
             label: body.label,
             mode,
             bound_user_id: body.bound_user_id.map(Into::into),
-            cert_serial: body.cert_serial,
-            cert_fingerprint: body.cert_fingerprint,
+            host: body.host,
+            server_fingerprint_sha256: fingerprint.clone(),
         },
     )?;
-    Ok(Json(EnrollWorkstationOut { id: ws.id.into() }))
+
+    Ok(Json(MintEnrollmentOut {
+        enrollment_id: minted.enrollment_id,
+        uri: minted.uri,
+        token: minted.token.expose_secret().to_owned(),
+        server_fingerprint_sha256: fingerprint,
+    }))
+}
+
+/// SHA-256 of the **DER-encoded** leaf cert. Canonical: PEM hashing varies with line
+/// endings + whitespace, DER is byte-stable. The workstation client's pin verifier
+/// also hashes DER (`anamnez_client_core::transport_native::pin_verifier`).
+fn fingerprint_sha256_hex_of_pem_leaf(pem: &str) -> std::result::Result<String, &'static str> {
+    let mut cursor = std::io::Cursor::new(pem.as_bytes());
+    let der = rustls_pemfile::certs(&mut cursor)
+        .next()
+        .ok_or("server_cert.pem: empty")?
+        .map_err(|_| "server_cert.pem: invalid PEM")?;
+    let mut h = Sha256::new();
+    h.update(der.as_ref());
+    let out = h.finalize();
+    let mut s = String::with_capacity(out.len() * 2);
+    for b in out {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+    }
+    Ok(s)
 }
 
 #[derive(Debug, Deserialize)]

@@ -1,18 +1,33 @@
 use crate::serve::app_state::{AppState, AuthContext};
 use crate::serve::error::ApiError;
 use crate::serve::routes::patients::parse_uuid;
-use anamnez_core::ids::MedicationId;
+use anamnez_core::ids::{MedicationId, PatientId};
 use anamnez_core::medication;
 use anamnez_protocol::medication as p;
 use anamnez_protocol::versioned::Versioned;
 use axum::extract::{Extension, Path, State};
-use axum::routing::{patch, post};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/medications", post(create))
         .route("/v1/medications/:id", patch(amend))
+        .route("/v1/patients/:id/medications", get(list_by_patient))
+}
+
+async fn list_by_patient(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id_str): Path<String>,
+) -> std::result::Result<Json<Vec<Versioned<p::Medication>>>, ApiError> {
+    let pid = PatientId(parse_uuid(&id_str)?);
+    let rows = medication::list_by_patient(&state.db, auth.user_id(), pid)?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|v| Versioned::new(v.value.into(), v.version))
+            .collect(),
+    ))
 }
 
 async fn create(

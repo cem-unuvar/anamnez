@@ -14,6 +14,8 @@
 //!       server_cert.pem
 //!       server_key.pem
 //!       ca_cert.pem
+//!       ca_key.pem              # CA private key — used to sign workstation client certs
+//!                               # at enrollment exchange.
 //!
 //! The TLS PEMs are inputs, not outputs: callers mint them with their preferred
 //! mechanism (`rcgen` in the daemon's bootstrap helper, real first-boot wizard
@@ -44,6 +46,9 @@ pub struct BootstrapInputs<'a> {
     pub server_cert_pem: String,
     pub server_key_pem: String,
     pub ca_cert_pem: String,
+    /// CA private key — needed when the daemon signs workstation client certs
+    /// at enrollment exchange. See `workstation::exchange_enrollment`.
+    pub ca_key_pem: String,
 }
 
 pub struct BootstrapArtifacts {
@@ -85,6 +90,10 @@ pub fn run(inputs: BootstrapInputs<'_>) -> Result<BootstrapArtifacts> {
     std::fs::write(
         inputs.data_dir.join("tls").join("ca_cert.pem"),
         &inputs.ca_cert_pem,
+    )?;
+    std::fs::write(
+        inputs.data_dir.join("tls").join("ca_key.pem"),
+        &inputs.ca_key_pem,
     )?;
 
     // Open DB (runs migrations + env marker on first boot).

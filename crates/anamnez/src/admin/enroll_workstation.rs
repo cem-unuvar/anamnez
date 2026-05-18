@@ -41,7 +41,7 @@ pub fn run(args: AdminEnrollWorkstationArgs) -> Result<()> {
     };
 
     let server_cert_pem = std::fs::read_to_string(dd.join("tls").join("server_cert.pem"))?;
-    let fingerprint = fingerprint_sha256_hex(server_cert_pem.as_bytes());
+    let fingerprint = fingerprint_sha256_hex_of_pem_leaf(&server_cert_pem)?;
 
     let minted = workstation::mint_enrollment(
         &db,
@@ -68,14 +68,21 @@ pub fn run(args: AdminEnrollWorkstationArgs) -> Result<()> {
     Ok(())
 }
 
-fn fingerprint_sha256_hex(bytes: &[u8]) -> String {
+/// SHA-256 of the **DER-encoded** leaf cert (matches the workstation client's pin
+/// verifier — see `anamnez_client_core::transport_native::pin_verifier`).
+fn fingerprint_sha256_hex_of_pem_leaf(pem: &str) -> Result<String> {
+    let mut cursor = std::io::Cursor::new(pem.as_bytes());
+    let der = rustls_pemfile::certs(&mut cursor)
+        .next()
+        .ok_or(Error::Invariant("server_cert.pem: empty"))?
+        .map_err(|_| Error::Invariant("server_cert.pem: invalid PEM"))?;
     let mut h = Sha256::new();
-    h.update(bytes);
+    h.update(der.as_ref());
     let out = h.finalize();
     let mut s = String::with_capacity(out.len() * 2);
     for b in out {
         use std::fmt::Write;
         let _ = write!(s, "{b:02x}");
     }
-    s
+    Ok(s)
 }

@@ -9,5 +9,33 @@ publish = false
 [lints]
 workspace = true
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
+anamnez-protocol = { workspace = true }
 anamnez-client-core = { workspace = true }
+leptos = { version = "0.7", features = ["csr"] }
+leptos_router = { version = "0.7", default-features = false }
+serde = { workspace = true }
+serde_json = { workspace = true }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+serde-wasm-bindgen = "0.6"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "Event",
+    "EventTarget",
+    "EventListener",
+    "Storage",
+    "HtmlInputElement",
+    "Performance",
+] }
+gloo-timers = { version = "0.3", features = ["futures"] }
+console_error_panic_hook = "0.1"
+futures-util = { workspace = true }
+
+# Workstation UI uses thiserror via the tauri wrapper.
+thiserror = { workspace = true }

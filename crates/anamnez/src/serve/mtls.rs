@@ -111,4 +111,13 @@ impl ClientCertVerifier for AnamnezClientVerifier {
     fn offer_client_auth(&self) -> bool {
         true
     }
+
+    /// The TLS handshake must succeed without a client cert so the workstation can
+    /// reach `POST /v1/enroll/exchange` — it has no client identity yet. Every other
+    /// route is protected by the `require_device_id` axum middleware (see
+    /// `serve/middleware/device_id.rs`), which rejects requests that arrived without
+    /// a presented + valid client cert.
+    fn client_auth_mandatory(&self) -> bool {
+        false
+    }
 }

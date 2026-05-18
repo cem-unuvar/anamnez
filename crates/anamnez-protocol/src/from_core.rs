@@ -10,6 +10,7 @@ use crate::auth as p_auth;
 use crate::codesystem as p_cs;
 use crate::consent as p_con;
 use crate::encounter as p_enc;
+use crate::environment as p_env;
 use crate::error::ErrorEnvelope;
 use crate::events as p_ev;
 use crate::ids as p_ids;
@@ -19,6 +20,25 @@ use crate::patient as p_pat;
 use crate::source_document as p_doc;
 use crate::stepup as p_step;
 use crate::versioned::Versioned as PVersioned;
+
+// ─── Environment ──────────────────────────────────────────────────────────────
+
+impl From<core::env::Environment> for p_env::Environment {
+    fn from(c: core::env::Environment) -> Self {
+        match c {
+            core::env::Environment::Production => Self::Production,
+            core::env::Environment::Test => Self::Test,
+        }
+    }
+}
+impl From<p_env::Environment> for core::env::Environment {
+    fn from(p: p_env::Environment) -> Self {
+        match p {
+            p_env::Environment::Production => Self::Production,
+            p_env::Environment::Test => Self::Test,
+        }
+    }
+}
 
 // ─── IDs ──────────────────────────────────────────────────────────────────────
 

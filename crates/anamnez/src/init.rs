@@ -35,13 +35,6 @@ pub fn run(args: InitArgs) -> Result<()> {
     }
 
     let pems = tls::mint_server_pems(&args.bind_host)?;
-    // Persist the CA private key alongside the others — used by enrollment
-    // exchange to mint workstation client certs.
-    std::fs::create_dir_all(args.data_dir.join("tls"))?;
-    std::fs::write(
-        args.data_dir.join("tls").join("ca_key.pem"),
-        &pems.ca_key_pem,
-    )?;
 
     let admin_password = read_password(args.password_stdin)?;
 
@@ -56,6 +49,7 @@ pub fn run(args: InitArgs) -> Result<()> {
         server_cert_pem: pems.server_cert_pem.clone(),
         server_key_pem: pems.server_key_pem.clone(),
         ca_cert_pem: pems.ca_cert_pem.clone(),
+        ca_key_pem: pems.ca_key_pem.clone(),
     })?;
 
     write_config_toml(&args)?;

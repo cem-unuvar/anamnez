@@ -13,5 +13,21 @@ workspace = true
 name = "anamnez-workstation"
 path = "src/main.rs"
 
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
 [dependencies]
 anamnez-protocol = { workspace = true }
+anamnez-client-core = { workspace = true, features = ["native-transport"] }
+tauri = { version = "2", features = [] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+secrecy = { workspace = true }
+directories = "5"
+async-trait = { workspace = true }
+parking_lot = { workspace = true }
