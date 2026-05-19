@@ -14,6 +14,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use anamnez_core::bootstrap::{self, BootstrapInputs};
+use anamnez_core::code_systems::{loader, repo_code_systems_root};
 use anamnez_core::db::Database;
 use anamnez_core::env::Environment;
 use anamnez_core::ids::WorkstationId;
@@ -38,6 +39,11 @@ pub fn run(_args: Vec<String>) -> Result<(), String> {
     } else {
         eprintln!("dev-up: reusing existing data_dir at {}", dd.display());
     }
+
+    // Idempotently seed code-systems lookup tables from the repo CSVs. Production
+    // would receive a signed bundle (see SPEC §Storage → Bundle distribution); dev
+    // shortcut: load CSVs directly so autocomplete works against `cargo xtask dev-up`.
+    ensure_codesystems_loaded(&dd)?;
 
     let recovery_code = std::fs::read_to_string(paths::recovery_code_file())
         .map_err(|e| format!("read recovery code: {e}"))?;
@@ -218,6 +224,47 @@ fn mint_dev_workstation(
     // Persist the CA alongside for dev-seed convenience.
     std::fs::write(wdir.join("ca.pem"), ca_cert_pem).map_err(io)?;
 
+    Ok(())
+}
+
+fn ensure_codesystems_loaded(dd: &std::path::Path) -> Result<(), String> {
+    let cb = ColdBoot::new(Arc::new(FixtureSep::new()));
+    let wrap_sep = std::fs::read(dd.join("wrap_sep.bin")).map_err(io)?;
+    let passphrase = cb.unwrap_passphrase(&wrap_sep).map_err(core)?;
+    let db = Database::open(&dd.join("anamnez.sqlite"), passphrase, Environment::Test)
+        .map_err(core)?;
+
+    let already_loaded: bool = db
+        .with_reader(|conn| {
+            let n: i64 =
+                conn.query_row("SELECT COUNT(*) FROM drug_atc", [], |r| r.get(0))?;
+            Ok(n > 0)
+        })
+        .map_err(core)?;
+    if already_loaded {
+        eprintln!("dev-up: code-systems already loaded, skipping");
+        return Ok(());
+    }
+
+    let root = repo_code_systems_root();
+    if !root.is_dir() {
+        return Err(format!(
+            "dev-up: code-systems root not found at {} — is this checkout missing the CSVs?",
+            root.display(),
+        ));
+    }
+
+    eprintln!("dev-up: seeding code-systems from {} (one-time)", root.display());
+    let reports = db
+        .with_writer(|conn| loader::bootstrap_from_repo(conn, &root))
+        .map_err(core)?;
+    for r in &reports {
+        eprintln!(
+            "  {:>12}  {:>6} rows",
+            r.system.as_str(),
+            r.rows_inserted,
+        );
+    }
     Ok(())
 }
 

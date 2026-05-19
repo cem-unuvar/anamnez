@@ -6,11 +6,19 @@
 use std::sync::Arc;
 
 use anamnez_protocol::auth::{LoginRequest, LoginResponse, RefreshRequest, RefreshResponse};
+use anamnez_protocol::codesystem::{CodeSystem, SearchResponse};
+use anamnez_protocol::encounter::{
+    Encounter, FinishEncounterRequest, StartEncounterRequest,
+};
 use anamnez_protocol::enroll::{EnrollExchangeRequest, EnrollExchangeResponse};
 use anamnez_protocol::error::ErrorEnvelope;
 use anamnez_protocol::health::HealthEnvelope;
-use anamnez_protocol::ids::PatientId;
+use anamnez_protocol::ids::{EncounterId, ObservationId, PatientId};
+use anamnez_protocol::observation::{
+    AmendObservationRequest, MarkEnteredInErrorRequest, NewObservation, Observation,
+};
 use anamnez_protocol::patient::{PatientDetail, PatientListQuery, PatientListResponse};
+use anamnez_protocol::versioned::Versioned;
 use async_trait::async_trait;
 use reqwest::tls::{Certificate, Identity};
 use reqwest::{Client, ClientBuilder, Response};
@@ -230,6 +238,145 @@ impl HttpTransport for NativeTransport {
             .get(url)
             .header("x-client-version", &ep.client_version)
             .bearer_auth(access_token)
+            .send()
+            .await
+            .map_err(|e| ClientError::Transport(e.to_string()))?;
+        parse_response(resp).await
+    }
+
+    async fn search_codes(
+        &self,
+        ep: &ConnectedEndpoint,
+        access_token: &str,
+        system: CodeSystem,
+        q: String,
+        limit: Option<usize>,
+    ) -> Result<SearchResponse, ClientError> {
+        let client = self.build_pin_with_identity(ep)?;
+        let url = format!("{}/v1/codesystems/search", ep.base_url);
+        let system_tag = serde_json::to_value(system)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        let mut req = client
+            .get(url)
+            .header("x-client-version", &ep.client_version)
+            .bearer_auth(access_token)
+            .query(&[("system", system_tag.as_str()), ("q", q.as_str())]);
+        if let Some(l) = limit {
+            req = req.query(&[("limit", l.to_string().as_str())]);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ClientError::Transport(e.to_string()))?;
+        parse_response(resp).await
+    }
+
+    async fn start_encounter(
+        &self,
+        ep: &ConnectedEndpoint,
+        access_token: &str,
+        req: StartEncounterRequest,
+    ) -> Result<Versioned<Encounter>, ClientError> {
+        let client = self.build_pin_with_identity(ep)?;
+        let url = format!("{}/v1/encounters", ep.base_url);
+        let resp = client
+            .post(url)
+            .header("x-client-version", &ep.client_version)
+            .bearer_auth(access_token)
+            .json(&req)
+            .send()
+            .await
+            .map_err(|e| ClientError::Transport(e.to_string()))?;
+        parse_response(resp).await
+    }
+
+    async fn finish_encounter(
+        &self,
+        ep: &ConnectedEndpoint,
+        access_token: &str,
+        encounter_id: EncounterId,
+        req: FinishEncounterRequest,
+    ) -> Result<Versioned<Encounter>, ClientError> {
+        let client = self.build_pin_with_identity(ep)?;
+        let url = format!(
+            "{}/v1/encounters/{}/finish",
+            ep.base_url,
+            encounter_id.as_uuid()
+        );
+        let resp = client
+            .post(url)
+            .header("x-client-version", &ep.client_version)
+            .bearer_auth(access_token)
+            .json(&req)
+            .send()
+            .await
+            .map_err(|e| ClientError::Transport(e.to_string()))?;
+        parse_response(resp).await
+    }
+
+    async fn create_observation(
+        &self,
+        ep: &ConnectedEndpoint,
+        access_token: &str,
+        req: NewObservation,
+    ) -> Result<Versioned<Observation>, ClientError> {
+        let client = self.build_pin_with_identity(ep)?;
+        let url = format!("{}/v1/observations", ep.base_url);
+        let resp = client
+            .post(url)
+            .header("x-client-version", &ep.client_version)
+            .bearer_auth(access_token)
+            .json(&req)
+            .send()
+            .await
+            .map_err(|e| ClientError::Transport(e.to_string()))?;
+        parse_response(resp).await
+    }
+
+    async fn amend_observation(
+        &self,
+        ep: &ConnectedEndpoint,
+        access_token: &str,
+        observation_id: ObservationId,
+        req: AmendObservationRequest,
+    ) -> Result<Versioned<Observation>, ClientError> {
+        let client = self.build_pin_with_identity(ep)?;
+        let url = format!(
+            "{}/v1/observations/{}",
+            ep.base_url,
+            observation_id.as_uuid()
+        );
+        let resp = client
+            .patch(url)
+            .header("x-client-version", &ep.client_version)
+            .bearer_auth(access_token)
+            .json(&req)
+            .send()
+            .await
+            .map_err(|e| ClientError::Transport(e.to_string()))?;
+        parse_response(resp).await
+    }
+
+    async fn mark_observation_entered_in_error(
+        &self,
+        ep: &ConnectedEndpoint,
+        access_token: &str,
+        observation_id: ObservationId,
+        req: MarkEnteredInErrorRequest,
+    ) -> Result<Versioned<Observation>, ClientError> {
+        let client = self.build_pin_with_identity(ep)?;
+        let url = format!(
+            "{}/v1/observations/{}/entered-in-error",
+            ep.base_url,
+            observation_id.as_uuid()
+        );
+        let resp = client
+            .post(url)
+            .header("x-client-version", &ep.client_version)
+            .bearer_auth(access_token)
+            .json(&req)
             .send()
             .await
             .map_err(|e| ClientError::Transport(e.to_string()))?;

@@ -22,6 +22,7 @@ pub async fn events(
         let visible = match &ev.payload {
             ServerEventPayload::ForcedLogout { .. } => true, // ForcedLogout is broadcast-wide
             ServerEventPayload::ObservationAmendedElsewhere { patient_id, .. }
+            | ServerEventPayload::ObservationEnteredInError { patient_id, .. }
             | ServerEventPayload::PatientAccessChanged { patient_id, .. } => {
                 let pid: anamnez_core::ids::PatientId = (*patient_id).into();
                 anamnez_core::patient_access::level_for(&db, viewer, pid)

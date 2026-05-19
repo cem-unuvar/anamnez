@@ -5,11 +5,19 @@
 //! through the webview's stack."
 
 use anamnez_protocol::auth::{LoginRequest, LoginResponse, RefreshRequest, RefreshResponse};
+use anamnez_protocol::codesystem::{CodeSystem, SearchResponse};
+use anamnez_protocol::encounter::{
+    Encounter, FinishEncounterRequest, StartEncounterRequest,
+};
 use anamnez_protocol::enroll::{EnrollExchangeRequest, EnrollExchangeResponse};
 use anamnez_protocol::error::ErrorEnvelope;
 use anamnez_protocol::health::HealthEnvelope;
-use anamnez_protocol::ids::PatientId;
+use anamnez_protocol::ids::{EncounterId, ObservationId, PatientId};
+use anamnez_protocol::observation::{
+    AmendObservationRequest, MarkEnteredInErrorRequest, NewObservation, Observation,
+};
 use anamnez_protocol::patient::{PatientDetail, PatientListQuery, PatientListResponse};
+use anamnez_protocol::versioned::Versioned;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -102,6 +110,47 @@ struct GetPatientDetailArgs<'a> {
     access_token: &'a str,
     patient_id: PatientId,
 }
+#[derive(Serialize)]
+struct SearchCodesArgs<'a> {
+    ep: &'a ConnectedEndpoint,
+    access_token: &'a str,
+    system: CodeSystem,
+    q: &'a str,
+    limit: Option<usize>,
+}
+#[derive(Serialize)]
+struct StartEncounterArgs<'a> {
+    ep: &'a ConnectedEndpoint,
+    access_token: &'a str,
+    req: &'a StartEncounterRequest,
+}
+#[derive(Serialize)]
+struct FinishEncounterArgs<'a> {
+    ep: &'a ConnectedEndpoint,
+    access_token: &'a str,
+    encounter_id: EncounterId,
+    req: &'a FinishEncounterRequest,
+}
+#[derive(Serialize)]
+struct CreateObservationArgs<'a> {
+    ep: &'a ConnectedEndpoint,
+    access_token: &'a str,
+    req: &'a NewObservation,
+}
+#[derive(Serialize)]
+struct AmendObservationArgs<'a> {
+    ep: &'a ConnectedEndpoint,
+    access_token: &'a str,
+    observation_id: ObservationId,
+    req: &'a AmendObservationRequest,
+}
+#[derive(Serialize)]
+struct MarkObservationEnteredInErrorArgs<'a> {
+    ep: &'a ConnectedEndpoint,
+    access_token: &'a str,
+    observation_id: ObservationId,
+    req: &'a MarkEnteredInErrorRequest,
+}
 
 #[async_trait(?Send)]
 impl HttpTransport for TauriTransport {
@@ -166,6 +215,118 @@ impl HttpTransport for TauriTransport {
                 ep,
                 access_token,
                 patient_id,
+            },
+        )
+        .await
+    }
+
+    async fn search_codes(
+        &self,
+        ep: &ConnectedEndpoint,
+        access_token: &str,
+        system: CodeSystem,
+        q: String,
+        limit: Option<usize>,
+    ) -> Result<SearchResponse, ClientError> {
+        invoke(
+            "transport_search_codes",
+            SearchCodesArgs {
+                ep,
+                access_token,
+                system,
+                q: &q,
+                limit,
+            },
+        )
+        .await
+    }
+
+    async fn start_encounter(
+        &self,
+        ep: &ConnectedEndpoint,
+        access_token: &str,
+        req: StartEncounterRequest,
+    ) -> Result<Versioned<Encounter>, ClientError> {
+        invoke(
+            "transport_start_encounter",
+            StartEncounterArgs {
+                ep,
+                access_token,
+                req: &req,
+            },
+        )
+        .await
+    }
+
+    async fn finish_encounter(
+        &self,
+        ep: &ConnectedEndpoint,
+        access_token: &str,
+        encounter_id: EncounterId,
+        req: FinishEncounterRequest,
+    ) -> Result<Versioned<Encounter>, ClientError> {
+        invoke(
+            "transport_finish_encounter",
+            FinishEncounterArgs {
+                ep,
+                access_token,
+                encounter_id,
+                req: &req,
+            },
+        )
+        .await
+    }
+
+    async fn create_observation(
+        &self,
+        ep: &ConnectedEndpoint,
+        access_token: &str,
+        req: NewObservation,
+    ) -> Result<Versioned<Observation>, ClientError> {
+        invoke(
+            "transport_create_observation",
+            CreateObservationArgs {
+                ep,
+                access_token,
+                req: &req,
+            },
+        )
+        .await
+    }
+
+    async fn amend_observation(
+        &self,
+        ep: &ConnectedEndpoint,
+        access_token: &str,
+        observation_id: ObservationId,
+        req: AmendObservationRequest,
+    ) -> Result<Versioned<Observation>, ClientError> {
+        invoke(
+            "transport_amend_observation",
+            AmendObservationArgs {
+                ep,
+                access_token,
+                observation_id,
+                req: &req,
+            },
+        )
+        .await
+    }
+
+    async fn mark_observation_entered_in_error(
+        &self,
+        ep: &ConnectedEndpoint,
+        access_token: &str,
+        observation_id: ObservationId,
+        req: MarkEnteredInErrorRequest,
+    ) -> Result<Versioned<Observation>, ClientError> {
+        invoke(
+            "transport_mark_observation_entered_in_error",
+            MarkObservationEnteredInErrorArgs {
+                ep,
+                access_token,
+                observation_id,
+                req: &req,
             },
         )
         .await

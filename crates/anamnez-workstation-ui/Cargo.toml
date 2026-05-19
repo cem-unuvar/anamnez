@@ -15,6 +15,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 anamnez-protocol = { workspace = true }
 anamnez-client-core = { workspace = true }
+jiff = { workspace = true }
 leptos = { version = "0.7", features = ["csr"] }
 leptos_router = { version = "0.7", default-features = false }
 serde = { workspace = true }

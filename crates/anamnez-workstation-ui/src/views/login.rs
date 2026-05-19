@@ -1,5 +1,9 @@
 //! Login screen — email + password. On success, transitions to `AppMode::AppShell`
 //! and caches the daemon's reported environment + idle-lock policy.
+//!
+//! When `locked = true`, the card prepends a "session was locked" notice so the
+//! user understands why they're seeing the login form again. The fields and
+//! submit path are identical either way.
 
 use anamnez_client_core::AppMode;
 use anamnez_protocol::auth::User;
@@ -25,8 +29,13 @@ struct LoginEcho {
 }
 
 #[component]
-pub fn Login(ctx: GlobalCtx) -> impl IntoView {
-    let email = RwSignal::new(String::new());
+pub fn Login(ctx: GlobalCtx, #[prop(optional)] locked: bool) -> impl IntoView {
+    let email = RwSignal::new(
+        ctx.user
+            .get_untracked()
+            .map(|u| u.email)
+            .unwrap_or_default(),
+    );
     let password = RwSignal::new(String::new());
     let busy = RwSignal::new(false);
     let error = RwSignal::new(Option::<String>::None);
@@ -59,7 +68,11 @@ pub fn Login(ctx: GlobalCtx) -> impl IntoView {
                     }
                     Err(e) => {
                         error.set(Some(format!("giriş başarısız: {e}")));
-                        ctx.mode.set(AppMode::LoggedOut);
+                        ctx.mode.set(if locked {
+                            AppMode::Locked
+                        } else {
+                            AppMode::LoggedOut
+                        });
                     }
                 }
                 busy.set(false);
@@ -67,10 +80,23 @@ pub fn Login(ctx: GlobalCtx) -> impl IntoView {
         }
     };
 
+    let title = if locked { "Oturum kilitlendi" } else { "Giriş" };
+
     view! {
         <div class="center">
             <div class="card">
-                <h1>"Giriş"</h1>
+                <h1>{title}</h1>
+                {move || if locked {
+                    view! {
+                        <p class="muted">
+                            "Hareketsizlik nedeniyle oturumunuz sonlandırıldı. "
+                            "Devam etmek için tekrar giriş yapın."
+                        </p>
+                    }
+                    .into_any()
+                } else {
+                    view! {}.into_any()
+                }}
                 <label>
                     "E-posta"
                     <input
@@ -85,11 +111,26 @@ pub fn Login(ctx: GlobalCtx) -> impl IntoView {
                         type="password"
                         prop:value=move || password.get()
                         on:input=move |ev| password.set(event_target_value(&ev))
+                        on:keydown={
+                            let on_submit = on_submit.clone();
+                            move |ev: leptos::ev::KeyboardEvent| {
+                                if ev.key() == "Enter" {
+                                    on_submit(());
+                                }
+                            }
+                        }
                     />
                 </label>
                 {move || error.get().map(|e| view! { <div class="error">{e}</div> })}
                 <div class="actions">
-                    <button class="primary" prop:disabled=move || busy.get() on:click=on_submit.clone()>
+                    <button
+                        class="primary"
+                        prop:disabled=move || busy.get()
+                        on:click={
+                            let on_submit = on_submit.clone();
+                            move |_| on_submit(())
+                        }
+                    >
                         {move || if busy.get() { "Giriş yapılıyor…" } else { "Giriş yap" }}
                     </button>
                 </div>

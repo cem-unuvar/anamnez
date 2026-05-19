@@ -104,13 +104,34 @@ async fn detail(
     let allergies = allergy::list_by_patient(&state.db, auth.user_id(), id)?;
     let medications = medication::list_by_patient(&state.db, auth.user_id(), id)?;
     let encounters = encounter::list_by_patient(&state.db, auth.user_id(), id)?;
+
+    // Observations scoped to the in-progress encounter — drives the
+    // active-visit timeline in the workstation UI. Empty if no visit is open.
+    let active_encounter_observations = match encounters
+        .iter()
+        .find(|v| {
+            matches!(
+                v.value.status,
+                anamnez_core::encounter::EncounterStatus::InProgress
+            )
+        })
+        .map(|v| v.value.id)
+    {
+        Some(enc_id) => observation::list_for_encounter(&state.db, auth.user_id(), id, enc_id)?,
+        None => Vec::new(),
+    };
+
     let detail = p::PatientDetail {
         patient: v.value.into(),
         access_level: AccessLevel::from(access_level),
         problem_list: problem_list.into_iter().map(|v| v.value.into()).collect(),
         allergies: allergies.into_iter().map(|v| v.value.into()).collect(),
         medications: medications.into_iter().map(|v| v.value.into()).collect(),
-        encounters: encounters.into_iter().map(|v| v.value.into()).collect(),
+        encounters: encounters.into_iter().map(Into::into).collect(),
+        active_encounter_observations: active_encounter_observations
+            .into_iter()
+            .map(Into::into)
+            .collect(),
     };
     Ok(Json(detail))
 }

@@ -23,6 +23,10 @@ async fn observation_create_round_trip() {
     )
     .unwrap();
 
+    // Codes are required on every observation; seed one ANAMNEZ-SYM row so the
+    // observation create below has a valid `(code, code_system)` pair to point at.
+    bootstrap::seed_symptom(&bs.data_dir, "ANAMNEZ-SYM-0042", "boyun ağrısı");
+
     let _daemon = spawn::spawn_serve(&config_path, &pid_path, &bind, &bs.recovery_code);
     let client = tls::client(
         &bs.ca_pem,
@@ -75,8 +79,8 @@ async fn observation_create_round_trip() {
         "patient_id": patient_id,
         "effective_period_start": "2026-05-17T10:00:00Z",
         "effective_period_end": null,
-        "code": null,
-        "code_system": null,
+        "code": "ANAMNEZ-SYM-0042",
+        "code_system": "ANAMNEZ-SYM",
         "display_text": "boyun ağrısı",
         "value": null,
         "status": "preliminary",

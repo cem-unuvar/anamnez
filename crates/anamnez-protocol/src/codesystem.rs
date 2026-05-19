@@ -19,3 +19,18 @@ pub enum CodeSystem {
     #[serde(rename = "ANAMNEZ-SYM")]
     AnamnezSym,
 }
+
+/// One hit from `GET /v1/codesystems/search`. FTS5-ranked, most relevant first.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchHit {
+    pub code_system: CodeSystem,
+    pub code: String,
+    pub display_tr: Option<String>,
+    pub display_en: Option<String>,
+    pub is_retired: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchResponse {
+    pub hits: Vec<SearchHit>,
+}

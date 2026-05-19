@@ -12,11 +12,20 @@ use anamnez_client_core::secret_native::{self, Slot};
 use anamnez_client_core::transport::{ConnectedEndpoint, EnrollEndpoint, HttpTransport};
 use anamnez_client_core::Session;
 use anamnez_protocol::auth::{LoginRequest, LoginResponse, RefreshRequest, RefreshResponse};
+use anamnez_protocol::codesystem::{CodeSystem, SearchResponse};
+use anamnez_protocol::encounter::{
+    Encounter, FinishEncounterRequest, StartEncounterRequest,
+};
 use anamnez_protocol::enroll::{EnrollExchangeRequest, EnrollExchangeResponse};
 use anamnez_protocol::environment::Environment;
 use anamnez_protocol::health::HealthEnvelope;
-use anamnez_protocol::ids::PatientId;
+use anamnez_protocol::ids::{EncounterId, ObservationId, PatientId};
+use anamnez_protocol::observation::{
+    AmendObservationRequest, ExtractedBy, ManualObservationDraft, MarkEnteredInErrorRequest,
+    NewObservation, Observation, ObservationValue, ValueQuantity,
+};
 use anamnez_protocol::patient::{PatientDetail, PatientListQuery, PatientListResponse};
+use anamnez_protocol::versioned::Versioned;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -65,12 +74,24 @@ pub async fn bootstrap_state() -> Result<BootstrapState, String> {
         .map_err(|e| e.to_string())?
         .display()
         .to_string();
-    let cert = secret_native::get(Slot::DeviceCertPem)
-        .map_err(|e| e.to_string())?
-        .is_some();
-    let refresh = secret_native::get(Slot::RefreshToken)
-        .map_err(|e| e.to_string())?
-        .is_some();
+    // Keychain access can fail in non-NoEntry ways (ACL denied, locked keychain,
+    // dev rebuilds, ...). Treat any error as "absent" for the boot probe and log
+    // the diagnostic — the alternative is failing the whole `bootstrap_state`
+    // call and stranding the user with no actionable UI.
+    let cert = match secret_native::get(Slot::DeviceCertPem) {
+        Ok(v) => v.is_some(),
+        Err(e) => {
+            tracing::warn!(slot = "device_cert_pem", error = %e, "keychain read failed");
+            false
+        }
+    };
+    let refresh = match secret_native::get(Slot::RefreshToken) {
+        Ok(v) => v.is_some(),
+        Err(e) => {
+            tracing::warn!(slot = "refresh_token", error = %e, "keychain read failed");
+            false
+        }
+    };
     Ok(BootstrapState {
         has_workstation_credential: cert && cfg.daemon.is_some(),
         has_refresh_token: refresh,
@@ -300,6 +321,101 @@ pub async fn transport_get_patient_detail(
     ))
 }
 
+#[tauri::command]
+pub async fn transport_search_codes(
+    state: State<'_, AppState>,
+    ep: ConnectedEndpoint,
+    access_token: String,
+    system: CodeSystem,
+    q: String,
+    limit: Option<usize>,
+) -> Result<IpcReply<SearchResponse>, String> {
+    Ok(wrap(
+        state
+            .transport
+            .search_codes(&ep, &access_token, system, q, limit)
+            .await,
+    ))
+}
+
+#[tauri::command]
+pub async fn transport_start_encounter(
+    state: State<'_, AppState>,
+    ep: ConnectedEndpoint,
+    access_token: String,
+    req: StartEncounterRequest,
+) -> Result<IpcReply<Versioned<Encounter>>, String> {
+    Ok(wrap(
+        state
+            .transport
+            .start_encounter(&ep, &access_token, req)
+            .await,
+    ))
+}
+
+#[tauri::command]
+pub async fn transport_finish_encounter(
+    state: State<'_, AppState>,
+    ep: ConnectedEndpoint,
+    access_token: String,
+    encounter_id: EncounterId,
+    req: FinishEncounterRequest,
+) -> Result<IpcReply<Versioned<Encounter>>, String> {
+    Ok(wrap(
+        state
+            .transport
+            .finish_encounter(&ep, &access_token, encounter_id, req)
+            .await,
+    ))
+}
+
+#[tauri::command]
+pub async fn transport_create_observation(
+    state: State<'_, AppState>,
+    ep: ConnectedEndpoint,
+    access_token: String,
+    req: NewObservation,
+) -> Result<IpcReply<Versioned<Observation>>, String> {
+    Ok(wrap(
+        state
+            .transport
+            .create_observation(&ep, &access_token, req)
+            .await,
+    ))
+}
+
+#[tauri::command]
+pub async fn transport_amend_observation(
+    state: State<'_, AppState>,
+    ep: ConnectedEndpoint,
+    access_token: String,
+    observation_id: ObservationId,
+    req: AmendObservationRequest,
+) -> Result<IpcReply<Versioned<Observation>>, String> {
+    Ok(wrap(
+        state
+            .transport
+            .amend_observation(&ep, &access_token, observation_id, req)
+            .await,
+    ))
+}
+
+#[tauri::command]
+pub async fn transport_mark_observation_entered_in_error(
+    state: State<'_, AppState>,
+    ep: ConnectedEndpoint,
+    access_token: String,
+    observation_id: ObservationId,
+    req: MarkEnteredInErrorRequest,
+) -> Result<IpcReply<Versioned<Observation>>, String> {
+    Ok(wrap(
+        state
+            .transport
+            .mark_observation_entered_in_error(&ep, &access_token, observation_id, req)
+            .await,
+    ))
+}
+
 // ─── UI-friendly commands that read native state ──────────────────────────────
 // The WASM UI shouldn't see cert PEMs or the access token — those live in the OS
 // keychain and in-process state. These commands take ONLY the request data; the
@@ -332,6 +448,140 @@ pub async fn ui_get_patient_detail(
         state
             .transport
             .get_patient_detail(&ep, &token, patient_id)
+            .await,
+    ))
+}
+
+#[tauri::command]
+pub async fn ui_search_codes(
+    state: State<'_, AppState>,
+    system: CodeSystem,
+    q: String,
+    limit: Option<usize>,
+) -> Result<IpcReply<SearchResponse>, String> {
+    let ep = state.connected.read().clone();
+    let token = state.access_token.read().clone();
+    let (Some(ep), Some(token)) = (ep, token) else {
+        return Ok(IpcReply::Err(anamnez_protocol::error::ErrorEnvelope::SessionExpired));
+    };
+    Ok(wrap(
+        state.transport.search_codes(&ep, &token, system, q, limit).await,
+    ))
+}
+
+#[tauri::command]
+pub async fn ui_start_encounter(
+    state: State<'_, AppState>,
+    req: StartEncounterRequest,
+) -> Result<IpcReply<Versioned<Encounter>>, String> {
+    let ep = state.connected.read().clone();
+    let token = state.access_token.read().clone();
+    let (Some(ep), Some(token)) = (ep, token) else {
+        return Ok(IpcReply::Err(anamnez_protocol::error::ErrorEnvelope::SessionExpired));
+    };
+    Ok(wrap(state.transport.start_encounter(&ep, &token, req).await))
+}
+
+#[tauri::command]
+pub async fn ui_finish_encounter(
+    state: State<'_, AppState>,
+    encounter_id: EncounterId,
+    req: FinishEncounterRequest,
+) -> Result<IpcReply<Versioned<Encounter>>, String> {
+    let ep = state.connected.read().clone();
+    let token = state.access_token.read().clone();
+    let (Some(ep), Some(token)) = (ep, token) else {
+        return Ok(IpcReply::Err(anamnez_protocol::error::ErrorEnvelope::SessionExpired));
+    };
+    Ok(wrap(
+        state
+            .transport
+            .finish_encounter(&ep, &token, encounter_id, req)
+            .await,
+    ))
+}
+
+#[tauri::command]
+pub async fn ui_create_observation(
+    state: State<'_, AppState>,
+    draft: ManualObservationDraft,
+) -> Result<IpcReply<Versioned<Observation>>, String> {
+    let ep = state.connected.read().clone();
+    let token = state.access_token.read().clone();
+    let (Some(ep), Some(token)) = (ep, token) else {
+        return Ok(IpcReply::Err(anamnez_protocol::error::ErrorEnvelope::SessionExpired));
+    };
+    let now = jiff::Timestamp::now();
+    // Map the form's flat (number+unit | text) fields into the protocol's
+    // tagged value enum. Quantity wins if both are populated; the form
+    // validates that mixed input doesn't actually reach this command.
+    let value = match (draft.value_quantity, draft.value_unit.as_deref()) {
+        (Some(v), Some(unit)) if !unit.trim().is_empty() => {
+            Some(ObservationValue::Quantity(ValueQuantity {
+                value: v,
+                unit: unit.trim().to_owned(),
+            }))
+        }
+        _ => match draft.value_text.as_deref() {
+            Some(s) if !s.trim().is_empty() => {
+                Some(ObservationValue::String(s.trim().to_owned()))
+            }
+            _ => None,
+        },
+    };
+    let req = NewObservation {
+        patient_id: draft.patient_id,
+        effective_period_start: now,
+        effective_period_end: None,
+        code: draft.code,
+        code_system: draft.code_system,
+        display_text: draft.display_text,
+        value,
+        status: draft.status,
+        is_problem_list_item: draft.is_problem_list_item,
+        source_id: None,
+        encounter_id: draft.encounter_id,
+        extracted_by: ExtractedBy::Manual,
+        model_version: None,
+        confidence: None,
+    };
+    Ok(wrap(state.transport.create_observation(&ep, &token, req).await))
+}
+
+#[tauri::command]
+pub async fn ui_amend_observation(
+    state: State<'_, AppState>,
+    observation_id: ObservationId,
+    req: AmendObservationRequest,
+) -> Result<IpcReply<Versioned<Observation>>, String> {
+    let ep = state.connected.read().clone();
+    let token = state.access_token.read().clone();
+    let (Some(ep), Some(token)) = (ep, token) else {
+        return Ok(IpcReply::Err(anamnez_protocol::error::ErrorEnvelope::SessionExpired));
+    };
+    Ok(wrap(
+        state
+            .transport
+            .amend_observation(&ep, &token, observation_id, req)
+            .await,
+    ))
+}
+
+#[tauri::command]
+pub async fn ui_mark_observation_entered_in_error(
+    state: State<'_, AppState>,
+    observation_id: ObservationId,
+    req: MarkEnteredInErrorRequest,
+) -> Result<IpcReply<Versioned<Observation>>, String> {
+    let ep = state.connected.read().clone();
+    let token = state.access_token.read().clone();
+    let (Some(ep), Some(token)) = (ep, token) else {
+        return Ok(IpcReply::Err(anamnez_protocol::error::ErrorEnvelope::SessionExpired));
+    };
+    Ok(wrap(
+        state
+            .transport
+            .mark_observation_entered_in_error(&ep, &token, observation_id, req)
             .await,
     ))
 }

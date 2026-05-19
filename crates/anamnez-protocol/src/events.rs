@@ -18,6 +18,13 @@ pub enum ServerEventPayload {
         observation_id: ObservationId,
         by_user_id: UserId,
     },
+    /// Another workstation marked an observation as entered-in-error. Soft-delete
+    /// — peers should drop the row from their timelines and problem lists.
+    ObservationEnteredInError {
+        patient_id: PatientId,
+        observation_id: ObservationId,
+        by_user_id: UserId,
+    },
     PatientAccessChanged {
         patient_id: PatientId,
         user_id: UserId,

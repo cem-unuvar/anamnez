@@ -15,8 +15,12 @@ use anamnez_client_core::transport::{ConnectedEndpoint, EnrollEndpoint};
 use anamnez_client_core::transport_native::NativeTransport;
 use anamnez_client_core::HttpTransport;
 use anamnez_protocol::auth::LoginRequest;
+use anamnez_protocol::codesystem::CodeSystem;
+use anamnez_protocol::encounter::EncounterStatus;
 use anamnez_protocol::enroll::EnrollExchangeRequest;
 use anamnez_protocol::environment::Environment;
+use anamnez_protocol::ids::PatientId;
+use anamnez_protocol::observation::{ObservationStatus, ObservationValue};
 use anamnez_protocol::patient::PatientListQuery;
 use sha2::{Digest, Sha256};
 
@@ -53,6 +57,9 @@ async fn native_transport_walks_enroll_login_list_detail() {
         bootstrap::config_toml(&bs.data_dir, &code_systems),
     )
     .unwrap();
+    // Codes are required on every observation; seed a single ANAMNEZ-SYM row
+    // so the lab-style POST below has a valid `(code_system, code)` pair.
+    bootstrap::seed_symptom(&bs.data_dir, "ANAMNEZ-SYM-LAB", "LDL Kolesterol");
     let _daemon = spawn::spawn_serve(&config_path, &pid_path, &bind, &bs.recovery_code);
 
     // Wait for daemon to be ready using the warm (mTLS-equipped) reqwest client.
@@ -162,7 +169,154 @@ async fn native_transport_walks_enroll_login_list_detail() {
     assert!(list.items.is_empty());
     assert!(list.next_before.is_none());
 
-    // 7. logout cleans up.
+    // 7. Seed a patient + open encounter via the admin HTTP route, then fetch
+    //    /v1/patients/:id/detail through the NATIVE TRANSPORT. This is the
+    //    exact path the Tauri workstation takes when a clinician opens a
+    //    patient page, and it deserializes the PatientDetail JSON through
+    //    reqwest's `.json::<PatientDetail>()`. Regression for the bug where a
+    //    protocol shape change (encounters: Vec<Encounter> →
+    //    Vec<Versioned<Encounter>>) shipped without a matching daemon rebuild,
+    //    causing the workstation to fail every patient page with the opaque
+    //    "serde: error decoding response body" message.
+    let r = admin
+        .post_raw(
+            "/v1/patients",
+            &serde_json::json!({
+                "mrn": "REGRESSION-001",
+                "given_names": "[TEST] Regression",
+                "family_name": "[TEST] Test",
+                "preferred_name": null,
+                "date_of_birth": "1990-01-01",
+                "sex_assigned_at_birth": "unknown",
+                "gender_identity": null,
+                "email": null,
+                "phone": null,
+                "address": null,
+                "emergency_contact_name": null,
+                "emergency_contact_phone": null,
+                "emergency_contact_relationship": null,
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.status(), reqwest::StatusCode::OK);
+    let created: serde_json::Value = r.json().await.unwrap();
+    let patient_id_str = created["value"]["id"].as_str().unwrap().to_owned();
+    let patient_id = PatientId(uuid::Uuid::parse_str(&patient_id_str).unwrap());
+
+    let r = admin
+        .post_raw(
+            "/v1/encounters",
+            &serde_json::json!({
+                "patient_id": patient_id_str,
+                "kind": "in_person",
+                "reason_text": "regression encounter",
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.status(), reqwest::StatusCode::OK);
+
+    // The actual regression assertion: the native transport must be able to
+    // parse the daemon's PatientDetail response, with the encounter coming
+    // back inside a `Versioned` wrapper that exposes `expected_version`.
+    let detail = transport
+        .get_patient_detail(&connected, &access, patient_id)
+        .await
+        .expect("get_patient_detail with seeded encounter");
+    assert_eq!(detail.patient.given_names, "[TEST] Regression");
+    assert_eq!(
+        detail.encounters.len(),
+        1,
+        "expected the seeded encounter in detail.encounters",
+    );
+    let enc = &detail.encounters[0];
+    assert!(enc.version >= 1, "encounter version should round-trip");
+    assert!(
+        matches!(enc.value.status, EncounterStatus::InProgress),
+        "expected the seeded encounter to be InProgress, got {:?}",
+        enc.value.status,
+    );
+    assert_eq!(enc.value.reason_text, "regression encounter");
+
+    // 8. Lab-style observation: post a free-text observation carrying a
+    //    `ValueQuantity` (the shape the workstation form sends when the
+    //    clinician types "LDL Kolesterol" + "130" + "mg/dL"). Regression for
+    //    the bug where `ui_create_observation` hardcoded `value: None`,
+    //    making it impossible to record lab results from the UI even though
+    //    the wire protocol supported them.
+    //
+    //    Codes are required on every observation; we seeded an ANAMNEZ-SYM
+    //    row above so this round-trip has a valid `(code, code_system)` pair
+    //    to point at without loading the full code-systems bundle.
+    let r = admin
+        .post_raw(
+            "/v1/observations",
+            &serde_json::json!({
+                "patient_id": patient_id_str,
+                "effective_period_start": jiff::Timestamp::now().to_string(),
+                "effective_period_end": null,
+                "code": "ANAMNEZ-SYM-LAB",
+                "code_system": "ANAMNEZ-SYM",
+                "display_text": "[TEST] LDL Kolesterol",
+                "value": { "value": 130.0, "unit": "mg/dL" },
+                "status": "preliminary",
+                "is_problem_list_item": false,
+                "source_id": null,
+                "encounter_id": null,
+                "extracted_by": "manual",
+                "model_version": null,
+                "confidence": null,
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status(),
+        reqwest::StatusCode::OK,
+        "create observation with quantity value: {}",
+        r.text().await.unwrap_or_default(),
+    );
+
+    // Re-fetch via the typed protocol type — this is the exact path that
+    // would have failed if `Observation.value: Option<ObservationValue>`
+    // (an untagged enum) couldn't round-trip a `Quantity` payload through
+    // serde_json on the client side.
+    let detail = transport
+        .get_patient_detail(&connected, &access, patient_id)
+        .await
+        .expect("get_patient_detail after observation create");
+
+    let r = admin
+        .get_raw(&format!("/v1/patients/{patient_id_str}/observations"))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), reqwest::StatusCode::OK);
+    let obs_list_text = r.text().await.unwrap();
+    let obs_list: Vec<
+        anamnez_protocol::versioned::Versioned<anamnez_protocol::observation::Observation>,
+    > = serde_json::from_str(&obs_list_text).expect("decode observations list");
+    let lab = obs_list
+        .iter()
+        .find(|v| v.value.display_text == "[TEST] LDL Kolesterol")
+        .expect("expected the LDL observation in the list");
+    match &lab.value.value {
+        Some(ObservationValue::Quantity(q)) => {
+            assert_eq!(q.value, 130.0);
+            assert_eq!(q.unit, "mg/dL");
+        }
+        other => panic!("expected Quantity value, got {other:?}"),
+    }
+    assert!(matches!(lab.value.status, ObservationStatus::Preliminary));
+    assert_eq!(lab.value.code_system, Some(CodeSystem::AnamnezSym));
+    assert_eq!(lab.value.code.as_deref(), Some("ANAMNEZ-SYM-LAB"));
+    let _ = CodeSystem::Loinc;
+
+    // The patient detail still loads cleanly after a lab observation is in
+    // the system — same regression we test above, with extra payload now.
+    assert_eq!(detail.encounters.len(), 1);
+
+    // 9. logout cleans up.
     transport
         .logout(&connected, &access)
         .await

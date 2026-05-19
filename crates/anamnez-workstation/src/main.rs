@@ -34,8 +34,20 @@ fn main() {
             commands::transport_logout,
             commands::transport_list_patients,
             commands::transport_get_patient_detail,
+            commands::transport_search_codes,
+            commands::transport_start_encounter,
+            commands::transport_finish_encounter,
+            commands::transport_create_observation,
+            commands::transport_amend_observation,
+            commands::transport_mark_observation_entered_in_error,
             commands::ui_list_patients,
             commands::ui_get_patient_detail,
+            commands::ui_search_codes,
+            commands::ui_start_encounter,
+            commands::ui_finish_encounter,
+            commands::ui_create_observation,
+            commands::ui_amend_observation,
+            commands::ui_mark_observation_entered_in_error,
         ])
         .run(tauri::generate_context!())
         .expect("anamnez-workstation: tauri runtime panicked");

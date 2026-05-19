@@ -169,6 +169,18 @@ impl From<p_cs::CodeSystem> for core::code_systems::CodeSystem {
     }
 }
 
+impl From<core::code_systems::LookupRow> for p_cs::SearchHit {
+    fn from(c: core::code_systems::LookupRow) -> Self {
+        Self {
+            code_system: c.code_system.into(),
+            code: c.code,
+            display_tr: c.display_tr,
+            display_en: c.display_en,
+            is_retired: c.is_retired,
+        }
+    }
+}
+
 // ─── Versioned ────────────────────────────────────────────────────────────────
 
 impl<C, P: From<C>> From<core::locking::Versioned<C>> for PVersioned<P> {
@@ -275,6 +287,7 @@ impl From<core::observation::ObservationStatus> for p_obs::ObservationStatus {
             C::Preliminary => Self::Preliminary,
             C::Final => Self::Final,
             C::Amended => Self::Amended,
+            C::EnteredInError => Self::EnteredInError,
         }
     }
 }
@@ -285,6 +298,7 @@ impl From<p_obs::ObservationStatus> for core::observation::ObservationStatus {
             P::Preliminary => Self::Preliminary,
             P::Final => Self::Final,
             P::Amended => Self::Amended,
+            P::EnteredInError => Self::EnteredInError,
         }
     }
 }
@@ -375,7 +389,7 @@ impl From<p_obs::NewObservation> for core::observation::NewObservation {
             effective_period_start: p.effective_period_start,
             effective_period_end: p.effective_period_end,
             code: p.code,
-            code_system: p.code_system.map(Into::into),
+            code_system: p.code_system.into(),
             display_text: p.display_text,
             value: p.value.map(Into::into),
             status: p.status.into(),
@@ -861,6 +875,7 @@ impl From<core::audit::Action> for p_aud::Action {
             C::PatientOwnershipTransfer => Self::PatientOwnershipTransfer,
             C::ObservationCreate => Self::ObservationCreate,
             C::ObservationAmend => Self::ObservationAmend,
+            C::ObservationEnteredInError => Self::ObservationEnteredInError,
             C::AllergyCreate => Self::AllergyCreate,
             C::AllergyAmend => Self::AllergyAmend,
             C::MedicationCreate => Self::MedicationCreate,
@@ -964,6 +979,22 @@ impl p_ev::ServerEvent {
         Self {
             id,
             payload: p_ev::ServerEventPayload::ObservationAmendedElsewhere {
+                patient_id: patient_id.into(),
+                observation_id: observation_id.into(),
+                by_user_id: by_user_id.into(),
+            },
+        }
+    }
+    #[must_use]
+    pub fn observation_entered_in_error(
+        id: u64,
+        patient_id: core::ids::PatientId,
+        observation_id: core::ids::ObservationId,
+        by_user_id: core::ids::UserId,
+    ) -> Self {
+        Self {
+            id,
+            payload: p_ev::ServerEventPayload::ObservationEnteredInError {
                 patient_id: patient_id.into(),
                 observation_id: observation_id.into(),
                 by_user_id: by_user_id.into(),

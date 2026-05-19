@@ -16,6 +16,8 @@ pub enum Action {
     ObservationCreate,
     #[serde(rename = "observation.amend")]
     ObservationAmend,
+    #[serde(rename = "observation.entered_in_error")]
+    ObservationEnteredInError,
     #[serde(rename = "allergy.create")]
     AllergyCreate,
     #[serde(rename = "allergy.amend")]

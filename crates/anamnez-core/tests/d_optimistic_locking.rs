@@ -4,6 +4,7 @@
 
 use anamnez_core::ids::UserId;
 use anamnez_core::locking::Versioned;
+use anamnez_core::code_systems::CodeSystem;
 use anamnez_core::observation::{self, NewObservation, ObservationPatch, ObservationStatus};
 use anamnez_core::patient::{self, NewPatient, SexAssignedAtBirth};
 use anamnez_core::test_support::prelude::*;
@@ -95,6 +96,19 @@ fn observation_stale_version_returns_typed_conflict_with_new_state() {
     let owner = seed_user(&temp, "alice");
     let pid = fresh_patient(&temp, owner);
 
+    // Codes are required on every observation; seed a single ANAMNEZ-SYM row
+    // so create + amend's lookup_in_conn succeeds.
+    temp.db
+        .with_writer(|conn| {
+            conn.execute(
+                "INSERT INTO symptom_anamnez (code, display_tr, display_en, body_region) \
+                 VALUES ('ANAMNEZ-SYM-0042', 'boyun ağrısı', 'neck pain', 'head_neck')",
+                params![],
+            )?;
+            Ok(())
+        })
+        .expect("seed symptom row");
+
     let now = jiff::Timestamp::now();
     let v1 = observation::create(
         &temp.db,
@@ -103,8 +117,8 @@ fn observation_stale_version_returns_typed_conflict_with_new_state() {
             patient_id: pid,
             effective_period_start: now,
             effective_period_end: None,
-            code: None,
-            code_system: None,
+            code: "ANAMNEZ-SYM-0042".into(),
+            code_system: CodeSystem::AnamnezSym,
             display_text: "boyun ağrısı".into(),
             value: None,
             status: ObservationStatus::Preliminary,

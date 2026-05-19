@@ -162,7 +162,11 @@ pub struct PatientListResponse {
 }
 
 /// Bundled read-only patient view: demographics + active problems + allergies +
-/// medications + encounters. One round-trip, one consistent snapshot.
+/// medications + encounters + (if a visit is in progress) the observations
+/// recorded during it. One round-trip, one consistent snapshot. Encounters
+/// and active-visit observations carry their `Versioned` wrapper so the UI
+/// can amend, finish, or mark-entered-in-error without a second round-trip
+/// to fetch versions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PatientDetail {
     pub patient: Patient,
@@ -170,5 +174,9 @@ pub struct PatientDetail {
     pub problem_list: Vec<Observation>,
     pub allergies: Vec<Allergy>,
     pub medications: Vec<Medication>,
-    pub encounters: Vec<Encounter>,
+    pub encounters: Vec<crate::versioned::Versioned<Encounter>>,
+    /// Observations recorded against the currently in-progress encounter, newest
+    /// first. Empty when no visit is open. `entered_in_error` rows are excluded.
+    #[serde(default)]
+    pub active_encounter_observations: Vec<crate::versioned::Versioned<Observation>>,
 }

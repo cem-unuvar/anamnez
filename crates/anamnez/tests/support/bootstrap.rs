@@ -120,6 +120,31 @@ fn insert_workstation(
     Ok(())
 }
 
+/// Insert a single ANAMNEZ-SYM lookup row directly into the bootstrapped DB.
+/// Used by clinical tests that need to post an observation through the daemon
+/// — every observation requires a `(code, code_system)` pair the lookup table
+/// can resolve, but tests don't run the full code-systems bundle loader.
+pub fn seed_symptom(data_dir: &std::path::Path, code: &str, display_tr: &str) {
+    let wrap_sep = std::fs::read(data_dir.join("wrap_sep.bin")).expect("read wrap_sep.bin");
+    let cb = anamnez_core::key_custody::ColdBoot::new(Arc::new(FixtureSep::new()));
+    let passphrase = cb.unwrap_passphrase(&wrap_sep).expect("unwrap passphrase");
+    let db = anamnez_core::db::Database::open(
+        &data_dir.join("anamnez.sqlite"),
+        passphrase,
+        Environment::Test,
+    )
+    .expect("open db for seeding");
+    db.with_writer(|conn| {
+        conn.execute(
+            "INSERT INTO symptom_anamnez (code, display_tr, display_en, body_region) \
+             VALUES (?1, ?2, ?3, 'head_neck')",
+            rusqlite::params![code, display_tr, "neck pain"],
+        )?;
+        Ok(())
+    })
+    .expect("seed symptom row");
+}
+
 pub fn config_toml(data_dir: &std::path::Path, code_systems_root: &std::path::Path) -> String {
     format!(
         r#"

@@ -16,6 +16,10 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/observations", post(create))
         .route("/v1/observations/:id", get(get_one).patch(amend))
+        .route(
+            "/v1/observations/:id/entered-in-error",
+            post(mark_entered_in_error),
+        )
         .route("/v1/patients/:id/observations", get(list_by_patient))
         .route("/v1/patients/:id/problem-list", get(problem_list))
 }
@@ -55,6 +59,30 @@ async fn amend(
     )?;
     // Emit SSE event so other connected workstations see the amend.
     let ev = ServerEvent::observation_amended_elsewhere(
+        state.next_event_id(),
+        v.value.patient_id,
+        v.value.id,
+        auth.user_id(),
+    );
+    let _ = state.events.send(ev);
+    Ok(Json(Versioned::new(v.value.into(), v.version)))
+}
+
+async fn mark_entered_in_error(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id_str): Path<String>,
+    Json(req): Json<p::MarkEnteredInErrorRequest>,
+) -> std::result::Result<Json<Versioned<p::Observation>>, ApiError> {
+    let id = ObservationId(parse_uuid(&id_str)?);
+    let v = observation::mark_entered_in_error(
+        &state.db,
+        auth.user_id(),
+        id,
+        req.expected_version,
+    )?;
+    // Notify peer workstations so they drop the row from their views.
+    let ev = ServerEvent::observation_entered_in_error(
         state.next_event_id(),
         v.value.patient_id,
         v.value.id,

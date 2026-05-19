@@ -1,7 +1,9 @@
 //! README §Data Modelling — `observation` as a first-class clinical row.
 //!
-//! Amendments are in-place version bumps (no supersession chain). `final` requires
-//! `(code, code_system)`; `preliminary` allows null `code` with `display_text` preserved.
+//! Amendments are in-place version bumps (no supersession chain). Every
+//! observation carries a `(code, code_system)` pair — codes are required on
+//! every create and amend. `entered_in_error` is the soft-delete state: row
+//! stays in DB for audit, but is hidden from problem lists and timelines.
 
 use crate::audit::{self, Action, AppendInput};
 use crate::code_systems::{self, CodeSystem};
@@ -21,6 +23,7 @@ pub enum ObservationStatus {
     Preliminary,
     Final,
     Amended,
+    EnteredInError,
 }
 
 impl ObservationStatus {
@@ -30,6 +33,7 @@ impl ObservationStatus {
             Self::Preliminary => "preliminary",
             Self::Final => "final",
             Self::Amended => "amended",
+            Self::EnteredInError => "entered_in_error",
         }
     }
 
@@ -38,6 +42,7 @@ impl ObservationStatus {
             "preliminary" => Ok(Self::Preliminary),
             "final" => Ok(Self::Final),
             "amended" => Ok(Self::Amended),
+            "entered_in_error" => Ok(Self::EnteredInError),
             _ => Err(Error::Invariant("unknown observation status")),
         }
     }
@@ -105,13 +110,16 @@ pub struct Observation {
     pub confidence: Option<f64>,
 }
 
+/// `code` and `code_system` are required — every observation carries a code.
+/// SPEC §Data Modelling: `ANAMNEZ-SYM` is the catch-all when nothing else
+/// fits, so there is no longer a "preliminary with null code" escape hatch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewObservation {
     pub patient_id: PatientId,
     pub effective_period_start: Timestamp,
     pub effective_period_end: Option<Timestamp>,
-    pub code: Option<String>,
-    pub code_system: Option<CodeSystem>,
+    pub code: String,
+    pub code_system: CodeSystem,
     pub display_text: String,
     pub value: Option<ObservationValue>,
     pub status: ObservationStatus,
@@ -125,27 +133,23 @@ pub struct NewObservation {
 
 /// Validation rules:
 /// - `code_system` must be in the observation-scoped subset (`SKRS-VP` rejected).
-/// - `status = final` requires `code` and `code_system`.
-/// - If both code and code_system are set, the pair must exist in lookup tables.
+/// - `(code_system, code)` pair must exist in the lookup tables.
+/// - `entered_in_error` is not a valid create status (use `mark_entered_in_error`).
 /// - Caller must have collaborator-or-better access to the patient.
 pub fn create(
     db: &Database,
     actor: UserId,
     input: NewObservation,
 ) -> Result<Versioned<Observation>> {
-    if let Some(cs) = input.code_system {
-        if !cs.is_observation_scope() {
-            return Err(Error::CodeSystemNotAllowed {
-                code_system: cs.as_str().to_owned(),
-                context: "observation",
-            });
-        }
+    if !input.code_system.is_observation_scope() {
+        return Err(Error::CodeSystemNotAllowed {
+            code_system: input.code_system.as_str().to_owned(),
+            context: "observation",
+        });
     }
-    if matches!(input.status, ObservationStatus::Final)
-        && (input.code.is_none() || input.code_system.is_none())
-    {
+    if matches!(input.status, ObservationStatus::EnteredInError) {
         return Err(Error::Invariant(
-            "status=final requires code and code_system",
+            "cannot create observation with status=entered_in_error",
         ));
     }
 
@@ -158,8 +162,8 @@ pub fn create(
         recorded_at: now,
         effective_period_start: input.effective_period_start,
         effective_period_end: input.effective_period_end,
-        code: input.code.clone(),
-        code_system: input.code_system,
+        code: Some(input.code.clone()),
+        code_system: Some(input.code_system),
         display_text: input.display_text.clone(),
         value: input.value.clone(),
         status: input.status,
@@ -180,10 +184,8 @@ pub fn create(
             None => return Err(Error::NotFound),
         }
 
-        // (code_system, code) validation against lookup tables when both are set.
-        if let (Some(cs), Some(code)) = (input.code_system, input.code.as_deref()) {
-            code_systems::lookup_in_conn(conn, cs, code)?;
-        }
+        // (code_system, code) validation against lookup tables.
+        code_systems::lookup_in_conn(conn, input.code_system, &input.code)?;
 
         let (vq_val, vq_unit, v_str, vc_sys, vc_code) = unpack_value(observation.value.as_ref());
 
@@ -238,6 +240,10 @@ pub fn create(
 
 /// In-place amendment: bumps `version`, sets `status = amended`. Optimistic locking
 /// on `expected_version`. Stale version → `Error::Conflict { new_state_json }`.
+///
+/// Rejects amends on `entered_in_error` rows — once an observation is soft-deleted
+/// it stays that way (the audit trail is the only record of what was recorded by
+/// mistake, and amending would obscure that history).
 pub fn amend(
     db: &Database,
     actor: UserId,
@@ -255,6 +261,13 @@ pub fn amend(
             Some(l) if caps::can_write_clinical(l) => {}
             Some(_) => return Err(Error::Forbidden),
             None => return Err(Error::NotFound),
+        }
+
+        if matches!(current.value.status, ObservationStatus::EnteredInError) {
+            return Err(Error::InvalidStateTransition {
+                from: "entered_in_error",
+                to: "amended",
+            });
         }
 
         if current.version != expected_version {
@@ -281,9 +294,7 @@ pub fn amend(
         if let Some(v) = patch.value {
             next.value = v;
         }
-        if let Some(v) = patch.status {
-            next.status = v;
-        }
+        // Status is forced to 'amended' below; patch.status is ignored.
         if let Some(v) = patch.is_problem_list_item {
             next.is_problem_list_item = v;
         }
@@ -291,17 +302,23 @@ pub fn amend(
         next.status = ObservationStatus::Amended;
         next.recorded_at = db.clock().now();
 
-        if let Some(cs) = next.code_system {
-            if !cs.is_observation_scope() {
-                return Err(Error::CodeSystemNotAllowed {
-                    code_system: cs.as_str().to_owned(),
-                    context: "observation",
-                });
+        // Codes are required at all times — an amend may swap them but cannot
+        // clear them.
+        let (cs, code) = match (next.code_system, next.code.as_deref()) {
+            (Some(cs), Some(code)) => (cs, code),
+            _ => {
+                return Err(Error::Invariant(
+                    "amendment must keep (code, code_system) populated",
+                ))
             }
+        };
+        if !cs.is_observation_scope() {
+            return Err(Error::CodeSystemNotAllowed {
+                code_system: cs.as_str().to_owned(),
+                context: "observation",
+            });
         }
-        if let (Some(cs), Some(code)) = (next.code_system, next.code.as_deref()) {
-            code_systems::lookup_in_conn(conn, cs, code)?;
-        }
+        code_systems::lookup_in_conn(conn, cs, code)?;
 
         let (vq_val, vq_unit, v_str, vc_sys, vc_code) = unpack_value(next.value.as_ref());
 
@@ -345,6 +362,80 @@ pub fn amend(
                 actor_user_id: Some(actor),
                 auth_session_id: None,
                 action: Action::ObservationAmend,
+                target_type: "observation".into(),
+                target_id: next.id.as_uuid().to_string(),
+                patient_id: Some(next.patient_id),
+                metadata: json!({"new_version": expected_version + 1}),
+            },
+        )?;
+
+        Ok(Versioned::new(next, expected_version + 1))
+    })
+}
+
+/// Soft-delete: flips `status` to `entered_in_error`, bumps `version`, writes an
+/// `observation.entered_in_error` audit row. Hidden from problem lists and
+/// timelines thereafter; remains queryable for audit. Idempotent rejection if
+/// the row is already `entered_in_error` (returns `Error::InvalidStateTransition`).
+pub fn mark_entered_in_error(
+    db: &Database,
+    actor: UserId,
+    id: ObservationId,
+    expected_version: i64,
+) -> Result<Versioned<Observation>> {
+    db.with_writer(|conn| {
+        let current = load_in_conn(conn, id)?.ok_or(Error::NotFound)?;
+
+        let lvl = level_for_in_conn(conn, actor, current.value.patient_id)?;
+        match lvl {
+            Some(l) if caps::can_write_clinical(l) => {}
+            Some(_) => return Err(Error::Forbidden),
+            None => return Err(Error::NotFound),
+        }
+
+        if matches!(current.value.status, ObservationStatus::EnteredInError) {
+            return Err(Error::InvalidStateTransition {
+                from: "entered_in_error",
+                to: "entered_in_error",
+            });
+        }
+
+        if current.version != expected_version {
+            return Err(Error::Conflict {
+                current_version: current.version,
+                new_state_json: serde_json::to_string(&current.value)?,
+            });
+        }
+
+        let now = db.clock().now();
+        let mut next = current.value.clone();
+        next.status = ObservationStatus::EnteredInError;
+        next.recorded_at = now;
+
+        let affected = conn.execute(
+            "UPDATE observation SET status = 'entered_in_error', recorded_at = ?2, \
+             version = version + 1 WHERE id = ?1 AND version = ?3",
+            params![
+                next.id.as_uuid().to_string(),
+                next.recorded_at.to_string(),
+                expected_version,
+            ],
+        )?;
+        if affected == 0 {
+            let post = load_in_conn(conn, id)?.ok_or(Error::NotFound)?;
+            return Err(Error::Conflict {
+                current_version: post.version,
+                new_state_json: serde_json::to_string(&post.value)?,
+            });
+        }
+
+        audit::append_in_conn(
+            conn,
+            now,
+            AppendInput {
+                actor_user_id: Some(actor),
+                auth_session_id: None,
+                action: Action::ObservationEnteredInError,
                 target_type: "observation".into(),
                 target_id: next.id.as_uuid().to_string(),
                 patient_id: Some(next.patient_id),
@@ -425,10 +516,53 @@ pub fn list_by_patient(
             return Err(Error::NotFound);
         }
         let mut stmt = conn.prepare(
-            "SELECT id FROM observation WHERE patient_id = ?1 ORDER BY recorded_at DESC",
+            "SELECT id FROM observation \
+             WHERE patient_id = ?1 AND status <> 'entered_in_error' \
+             ORDER BY recorded_at DESC",
         )?;
         let ids: Vec<String> = stmt
             .query_map(params![patient_id.as_uuid().to_string()], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        let mut out = Vec::with_capacity(ids.len());
+        for s in ids {
+            let uuid = uuid::Uuid::parse_str(&s)
+                .map_err(|_| Error::Invariant("observation.id not a UUID"))?;
+            if let Some(v) = load_in_conn(conn, ObservationId(uuid))? {
+                out.push(v);
+            }
+        }
+        Ok(out)
+    })
+}
+
+/// Observations scoped to a single encounter, newest first. Hides
+/// `entered_in_error` rows. Used by the patient detail aggregator to bundle
+/// "what's been recorded in this visit" without a second round-trip.
+pub fn list_for_encounter(
+    db: &Database,
+    viewer: UserId,
+    patient_id: PatientId,
+    encounter_id: EncounterId,
+) -> Result<Vec<Versioned<Observation>>> {
+    db.with_reader(|conn| {
+        let lvl = level_for_in_conn(conn, viewer, patient_id)?;
+        if lvl.is_none() {
+            return Err(Error::NotFound);
+        }
+        let mut stmt = conn.prepare(
+            "SELECT id FROM observation \
+             WHERE patient_id = ?1 AND encounter_id = ?2 \
+               AND status <> 'entered_in_error' \
+             ORDER BY recorded_at DESC",
+        )?;
+        let ids: Vec<String> = stmt
+            .query_map(
+                params![
+                    patient_id.as_uuid().to_string(),
+                    encounter_id.as_uuid().to_string(),
+                ],
+                |r| r.get(0),
+            )?
             .collect::<rusqlite::Result<Vec<String>>>()?;
         let mut out = Vec::with_capacity(ids.len());
         for s in ids {

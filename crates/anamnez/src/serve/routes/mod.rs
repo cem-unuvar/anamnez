@@ -4,6 +4,7 @@ pub mod admin;
 pub mod allergies;
 pub mod analysis;
 pub mod auth;
+pub mod codesystems;
 pub mod consents;
 pub mod encounters;
 pub mod enroll;
@@ -46,6 +47,7 @@ pub fn build(state: AppState) -> Router {
         .merge(consents::router())
         .merge(patient_access::router())
         .merge(analysis::router())
+        .merge(codesystems::router())
         .merge(events::router())
         .merge(admin::router())
         .layer(ax_mw::from_fn_with_state(

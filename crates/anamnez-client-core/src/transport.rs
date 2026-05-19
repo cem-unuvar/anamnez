@@ -3,9 +3,18 @@
 //! and `ConnectedEndpoint` (post-enrollment; full mTLS).
 
 use anamnez_protocol::auth::{LoginRequest, LoginResponse, RefreshRequest, RefreshResponse};
+use anamnez_protocol::codesystem::{CodeSystem, SearchResponse};
+use anamnez_protocol::encounter::{
+    Encounter, FinishEncounterRequest, StartEncounterRequest,
+};
 use anamnez_protocol::enroll::{EnrollExchangeRequest, EnrollExchangeResponse};
 use anamnez_protocol::health::HealthEnvelope;
+use anamnez_protocol::ids::{EncounterId, ObservationId};
+use anamnez_protocol::observation::{
+    AmendObservationRequest, MarkEnteredInErrorRequest, NewObservation, Observation,
+};
 use anamnez_protocol::patient::{PatientDetail, PatientListQuery, PatientListResponse};
+use anamnez_protocol::versioned::Versioned;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -89,6 +98,53 @@ pub trait HttpTransport: Send + Sync {
         access_token: &str,
         patient_id: anamnez_protocol::ids::PatientId,
     ) -> Result<PatientDetail, ClientError>;
+
+    async fn search_codes(
+        &self,
+        ep: &ConnectedEndpoint,
+        access_token: &str,
+        system: CodeSystem,
+        q: String,
+        limit: Option<usize>,
+    ) -> Result<SearchResponse, ClientError>;
+
+    async fn start_encounter(
+        &self,
+        ep: &ConnectedEndpoint,
+        access_token: &str,
+        req: StartEncounterRequest,
+    ) -> Result<Versioned<Encounter>, ClientError>;
+
+    async fn finish_encounter(
+        &self,
+        ep: &ConnectedEndpoint,
+        access_token: &str,
+        encounter_id: EncounterId,
+        req: FinishEncounterRequest,
+    ) -> Result<Versioned<Encounter>, ClientError>;
+
+    async fn create_observation(
+        &self,
+        ep: &ConnectedEndpoint,
+        access_token: &str,
+        req: NewObservation,
+    ) -> Result<Versioned<Observation>, ClientError>;
+
+    async fn amend_observation(
+        &self,
+        ep: &ConnectedEndpoint,
+        access_token: &str,
+        observation_id: ObservationId,
+        req: AmendObservationRequest,
+    ) -> Result<Versioned<Observation>, ClientError>;
+
+    async fn mark_observation_entered_in_error(
+        &self,
+        ep: &ConnectedEndpoint,
+        access_token: &str,
+        observation_id: ObservationId,
+        req: MarkEnteredInErrorRequest,
+    ) -> Result<Versioned<Observation>, ClientError>;
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -129,4 +185,51 @@ pub trait HttpTransport {
         access_token: &str,
         patient_id: anamnez_protocol::ids::PatientId,
     ) -> Result<PatientDetail, ClientError>;
+
+    async fn search_codes(
+        &self,
+        ep: &ConnectedEndpoint,
+        access_token: &str,
+        system: CodeSystem,
+        q: String,
+        limit: Option<usize>,
+    ) -> Result<SearchResponse, ClientError>;
+
+    async fn start_encounter(
+        &self,
+        ep: &ConnectedEndpoint,
+        access_token: &str,
+        req: StartEncounterRequest,
+    ) -> Result<Versioned<Encounter>, ClientError>;
+
+    async fn finish_encounter(
+        &self,
+        ep: &ConnectedEndpoint,
+        access_token: &str,
+        encounter_id: EncounterId,
+        req: FinishEncounterRequest,
+    ) -> Result<Versioned<Encounter>, ClientError>;
+
+    async fn create_observation(
+        &self,
+        ep: &ConnectedEndpoint,
+        access_token: &str,
+        req: NewObservation,
+    ) -> Result<Versioned<Observation>, ClientError>;
+
+    async fn amend_observation(
+        &self,
+        ep: &ConnectedEndpoint,
+        access_token: &str,
+        observation_id: ObservationId,
+        req: AmendObservationRequest,
+    ) -> Result<Versioned<Observation>, ClientError>;
+
+    async fn mark_observation_entered_in_error(
+        &self,
+        ep: &ConnectedEndpoint,
+        access_token: &str,
+        observation_id: ObservationId,
+        req: MarkEnteredInErrorRequest,
+    ) -> Result<Versioned<Observation>, ClientError>;
 }

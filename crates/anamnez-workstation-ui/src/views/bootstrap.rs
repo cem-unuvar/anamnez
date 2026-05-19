@@ -44,6 +44,7 @@ pub fn Bootstrap(ctx: GlobalCtx) -> impl IntoView {
                 .await
                 {
                     Ok(_r) => {
+                        ctx.last_error.set(None);
                         ctx.mode.set(AppMode::LoggedOut);
                         Ok::<(), ()>(())
                     }
@@ -57,10 +58,14 @@ pub fn Bootstrap(ctx: GlobalCtx) -> impl IntoView {
         }
     };
 
+    let ctx_for_view = ctx.clone();
     view! {
         <div class="center">
             <div class="card">
                 <h1>"İş istasyonu kaydı"</h1>
+                {move || ctx_for_view.last_error.get().map(|msg| {
+                    view! { <div class="error">{msg}</div> }
+                })}
                 <p class="muted">
                     "Yöneticiniz size bir " <code>"anamnez://enroll?…"</code>
                     " bağlantısı verecek. Aşağıya yapıştırın."

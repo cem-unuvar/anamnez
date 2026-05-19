@@ -296,8 +296,8 @@ fn observation_create_via_public_api_with_invalid_pair_returns_code_system_misma
             patient_id: pid,
             effective_period_start: jiff::Timestamp::now(),
             effective_period_end: None,
-            code: Some("NOTACODE".into()),
-            code_system: Some(CodeSystem::Icd10Tm),
+            code: "NOTACODE".into(),
+            code_system: CodeSystem::Icd10Tm,
             display_text: "made up".into(),
             value: None,
             status: ObservationStatus::Preliminary,
@@ -328,8 +328,8 @@ fn observation_create_rejects_skrs_vp_at_api_layer() {
             patient_id: pid,
             effective_period_start: jiff::Timestamp::now(),
             effective_period_end: None,
-            code: Some("1".into()),
-            code_system: Some(CodeSystem::SkrsVp),
+            code: "1".into(),
+            code_system: CodeSystem::SkrsVp,
             display_text: "wrong scope".into(),
             value: None,
             status: ObservationStatus::Preliminary,
@@ -353,6 +353,10 @@ fn observation_amend_is_in_place_version_bump() {
     let owner = seed_user(&temp, "alice");
     let pid = fresh_patient(&temp, owner);
 
+    // Codes are required on every observation; seed a single ANAMNEZ-SYM row
+    // so create + amend's lookup_in_conn succeeds without loading the full CSV.
+    insert_symptom(&temp, "ANAMNEZ-SYM-0042", "boyun ağrısı");
+
     let v1 = observation::create(
         &temp.db,
         owner,
@@ -360,8 +364,8 @@ fn observation_amend_is_in_place_version_bump() {
             patient_id: pid,
             effective_period_start: jiff::Timestamp::now(),
             effective_period_end: None,
-            code: None,
-            code_system: None,
+            code: "ANAMNEZ-SYM-0042".into(),
+            code_system: CodeSystem::AnamnezSym,
             display_text: "boyun ağrısı".into(),
             value: None,
             status: ObservationStatus::Preliminary,
@@ -437,8 +441,8 @@ fn problem_list_returns_active_final_icd10tm_observations() {
             patient_id: pid,
             effective_period_start: jiff::Timestamp::now(),
             effective_period_end: None,
-            code: Some(known.clone()),
-            code_system: Some(CodeSystem::Icd10Tm),
+            code: known.clone(),
+            code_system: CodeSystem::Icd10Tm,
             display_text: "kolera".into(),
             value: None,
             status: ObservationStatus::Final,
@@ -460,8 +464,8 @@ fn problem_list_returns_active_final_icd10tm_observations() {
             patient_id: pid,
             effective_period_start: jiff::Timestamp::now(),
             effective_period_end: None,
-            code: Some(known.clone()),
-            code_system: Some(CodeSystem::Icd10Tm),
+            code: known.clone(),
+            code_system: CodeSystem::Icd10Tm,
             display_text: "secondary mention".into(),
             value: None,
             status: ObservationStatus::Final,
@@ -479,6 +483,98 @@ fn problem_list_returns_active_final_icd10tm_observations() {
     assert_eq!(problems.len(), 1);
     assert_eq!(problems[0].value.code.as_deref(), Some(known.as_str()));
     assert!(problems[0].value.is_problem_list_item);
+}
+
+#[test]
+fn observation_mark_entered_in_error_hides_row_from_problem_list_and_writes_audit() {
+    use anamnez_core::code_systems::loader;
+    use anamnez_core::code_systems::{repo_code_systems_root, CodeSystem};
+
+    let temp = TempDb::new().expect("TempDb opens");
+    let owner = seed_user(&temp, "alice");
+    let pid = fresh_patient(&temp, owner);
+
+    // Need a real ICD-10-TM code for the (code, code_system) FK check.
+    let root = repo_code_systems_root();
+    temp.db
+        .with_writer(|conn| {
+            loader::load_csv(
+                conn,
+                CodeSystem::Icd10Tm,
+                &root.join("icd10-tm/normalized.csv"),
+            )
+        })
+        .expect("ICD-10-TM load");
+    let known: String = temp
+        .db
+        .with_reader(|conn| {
+            let s: String = conn.query_row(
+                "SELECT code FROM icd10_tm WHERE code = 'A00.0' OR code = 'A00' LIMIT 1",
+                params![],
+                |r| r.get(0),
+            )?;
+            Ok(s)
+        })
+        .expect("pick known code");
+
+    let v1 = observation::create(
+        &temp.db,
+        owner,
+        NewObservation {
+            patient_id: pid,
+            effective_period_start: jiff::Timestamp::now(),
+            effective_period_end: None,
+            code: known.clone(),
+            code_system: CodeSystem::Icd10Tm,
+            display_text: "mistaken entry".into(),
+            value: None,
+            status: ObservationStatus::Final,
+            is_problem_list_item: true,
+            source_id: None,
+            encounter_id: None,
+            extracted_by: ExtractedBy::Manual,
+            model_version: None,
+            confidence: None,
+        },
+    )
+    .expect("create");
+    assert_eq!(
+        observation::problem_list(&temp.db, owner, pid)
+            .expect("pre")
+            .len(),
+        1,
+        "problem appears before retraction",
+    );
+
+    let v2 = observation::mark_entered_in_error(&temp.db, owner, v1.value.id, v1.version)
+        .expect("mark_entered_in_error");
+
+    assert_eq!(v2.version, v1.version + 1);
+    assert!(matches!(
+        v2.value.status,
+        ObservationStatus::EnteredInError
+    ));
+    assert!(
+        observation::problem_list(&temp.db, owner, pid)
+            .expect("post")
+            .is_empty(),
+        "entered-in-error row must drop out of the problem list",
+    );
+    assert!(
+        observation::list_by_patient(&temp.db, owner, pid)
+            .expect("list")
+            .is_empty(),
+        "entered-in-error row must drop out of list_by_patient too",
+    );
+    assert_eq!(last_audit_action(&temp), "observation.entered_in_error");
+
+    // Idempotent rejection: second call on the same row returns
+    // InvalidStateTransition rather than blindly bumping the version again.
+    let err = observation::mark_entered_in_error(&temp.db, owner, v1.value.id, v2.version)
+        .expect_err("second mark must be rejected");
+    matches!(err, Error::InvalidStateTransition { .. })
+        .then_some(())
+        .expect("expected InvalidStateTransition");
 }
 
 // ─── Helpers shared by subsystem-G tests ─────────────────────────────────────
@@ -506,6 +602,19 @@ fn insert_atc(temp: &TempDb, code: &str, description_tr: &str) {
             Ok(())
         })
         .expect("seed drug_atc row");
+}
+
+fn insert_symptom(temp: &TempDb, code: &str, display_tr: &str) {
+    temp.db
+        .with_writer(|conn| {
+            conn.execute(
+                "INSERT INTO symptom_anamnez (code, display_tr, display_en, body_region) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![code, display_tr, "neck pain", "head_neck"],
+            )?;
+            Ok(())
+        })
+        .expect("seed symptom_anamnez row");
 }
 
 // ─── Public API: allergy::create / amend ─────────────────────────────────────

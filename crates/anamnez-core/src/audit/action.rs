@@ -17,6 +17,8 @@ pub enum Action {
     ObservationCreate,
     #[serde(rename = "observation.amend")]
     ObservationAmend,
+    #[serde(rename = "observation.entered_in_error")]
+    ObservationEnteredInError,
 
     #[serde(rename = "allergy.create")]
     AllergyCreate,
@@ -85,6 +87,7 @@ impl Action {
             Self::PatientOwnershipTransfer => "patient.ownership_transfer",
             Self::ObservationCreate => "observation.create",
             Self::ObservationAmend => "observation.amend",
+            Self::ObservationEnteredInError => "observation.entered_in_error",
             Self::AllergyCreate => "allergy.create",
             Self::AllergyAmend => "allergy.amend",
             Self::MedicationCreate => "medication.create",

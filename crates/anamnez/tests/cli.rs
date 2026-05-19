@@ -113,7 +113,7 @@ fn init_then_health_reports_db_state() {
         .clone();
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.contains("\"db_open\": true"), "{stdout}");
-    assert!(stdout.contains("\"schema_version\": 6"), "{stdout}");
+    assert!(stdout.contains("\"schema_version\": 7"), "{stdout}");
     assert!(stdout.contains("\"audit_chain_head_id\":"), "{stdout}");
     assert!(
         stdout.contains("\"code_systems_loaded\": false"),
